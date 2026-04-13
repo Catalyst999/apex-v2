@@ -1,0 +1,31 @@
+{
+  "name": "apex-v2",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc",
+    "dev": "ts-node src/index.ts"
+  },
+  "keywords": [],
+  "author": "Catalyst",
+  "license": "ISC",
+  "description": "APEX v2 — AI Memecoin Trading Bot",
+  "dependencies": {
+    "@jup-ag/api": "^6.0.21",
+    "@solana/web3.js": "^1.91.0",
+    "@supabase/supabase-js": "^2.39.8",
+    "axios": "^1.6.8",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.11.1",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
