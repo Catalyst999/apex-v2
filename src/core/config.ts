@@ -13,6 +13,12 @@ function requireEnv(key: string): string {
 
 // ─── Solana Keypair Loader ────────────────────────────────────
 function loadSolanaKeypair(): Keypair {
+  // Railway cloud — load from env variable
+  if (process.env.SOLANA_PRIVATE_KEY) {
+    const parsed = JSON.parse(process.env.SOLANA_PRIVATE_KEY);
+    return Keypair.fromSecretKey(Uint8Array.from(parsed));
+  }
+  // Local dev — load from file
   const keyPath = process.env.SOLANA_KEY_PATH ?? "";
   if (!fs.existsSync(keyPath)) {
     throw new Error(`Solana key not found at: ${keyPath}`);
