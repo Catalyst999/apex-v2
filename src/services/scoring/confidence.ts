@@ -7,12 +7,18 @@ export interface ScoreBreakdown {
   liquidity: number;
   momentum: number;
   age: number;
+  narrative: number;
   details: {
     liquidityUsd: number;
     volumeM5: number;
     volLiqRatio: number;
     ageMinutes: number;
     priceUsd: number;
+    priceChangeM5: number;
+    buyCount: number;
+    sellCount: number;
+    buySellRatio: number;
+    fakeVolumeFlag: boolean;
   };
 }
 
@@ -24,39 +30,86 @@ export function scorePair(
   let liquidity = 0;
   let momentum = 0;
   let age = 0;
+  let narrative = 0;
 
   const now = Date.now();
   const ageMinutes = (now - pair.pairCreatedAt) / 1000 / 60;
   const liquidityUsd = pair.liquidity?.usd ?? 0;
   const volumeM5 = pair.volume?.m5 ?? 0;
+  const volumeH24 = pair.volume?.h24 ?? 0;
   const volLiqRatio = liquidityUsd > 0 ? volumeM5 / liquidityUsd : 0;
   const priceUsd = parseFloat(pair.priceUsd ?? "0");
+  const priceChangeM5 = pair.priceChange?.m5 ?? 0;
+  const buyCount = pair.txns?.m5?.buys ?? 0;
+  const sellCount = pair.txns?.m5?.sells ?? 0;
+  const buySellRatio = sellCount > 0 ? buyCount / sellCount : buyCount;
 
-  // ── Safety (30pts) ──────────────────────────────────────
+  // Fake volume detection
+  const fakeVolumeFlag =
+    volLiqRatio > 50 || (volumeH24 > 100000 && liquidityUsd < 3000);
+
+  // ── Safety (30pts) ───────────────────────────────────
   if (security.mintAuthority === null) safety += 15;
   if (security.freezeAuthority === null) safety += 10;
   if (!security.goplus.isHoneypot) safety += 5;
 
-  // ── Liquidity (25pts) ───────────────────────────────────
-  if (liquidityUsd >= 50000) liquidity += 25;
-  else if (liquidityUsd >= 20000) liquidity += 20;
-  else if (liquidityUsd >= 10000) liquidity += 15;
-  else if (liquidityUsd >= 5000) liquidity += 10;
+  // ── Liquidity (20pts) ────────────────────────────────
+  if (liquidityUsd >= 50000) liquidity += 20;
+  else if (liquidityUsd >= 20000) liquidity += 16;
+  else if (liquidityUsd >= 10000) liquidity += 12;
+  else if (liquidityUsd >= 5000) liquidity += 8;
 
-  // ── Momentum (25pts) ────────────────────────────────────
-  if (volLiqRatio >= 2.0) momentum += 25;
-  else if (volLiqRatio >= 1.5) momentum += 20;
-  else if (volLiqRatio >= 1.0) momentum += 15;
-  else if (volLiqRatio >= 0.5) momentum += 10;
-  else if (volLiqRatio > 0) momentum += 5;
+  // ── Momentum (25pts) ─────────────────────────────────
+  if (volLiqRatio >= 2.0) momentum += 12;
+  else if (volLiqRatio >= 1.5) momentum += 10;
+  else if (volLiqRatio >= 1.0) momentum += 7;
+  else if (volLiqRatio >= 0.5) momentum += 4;
 
-  // ── Age sweet spot (20pts) ──────────────────────────────
-  if (ageMinutes <= 10) age += 20;
-  else if (ageMinutes <= 30) age += 15;
-  else if (ageMinutes <= 60) age += 10;
-  else if (ageMinutes <= 120) age += 5;
+  if (buySellRatio >= 3) momentum += 8;
+  else if (buySellRatio >= 2) momentum += 6;
+  else if (buySellRatio >= 1.5) momentum += 4;
+  else if (buySellRatio >= 1) momentum += 2;
 
-  const total = safety + liquidity + momentum + age;
+  if (priceChangeM5 >= 10) momentum += 5;
+  else if (priceChangeM5 >= 0) momentum += 3;
+  else if (priceChangeM5 >= -5) momentum += 1;
+  else momentum -= 5;
+
+  if (fakeVolumeFlag) momentum -= 10;
+
+  // ── Age sweet spot (15pts) ───────────────────────────
+  if (ageMinutes <= 10) age += 15;
+  else if (ageMinutes <= 30) age += 12;
+  else if (ageMinutes <= 60) age += 8;
+  else if (ageMinutes <= 120) age += 4;
+
+  // ── Narrative fit (15pts) ────────────────────────────
+  const nameAndTicker = (
+    pair.baseToken.name + " " + pair.baseToken.symbol
+  ).toLowerCase();
+
+  const hotNarratives = [
+    "trump", "maga", "elon", "doge", "pepe", "ai", "dog",
+    "cat", "based", "chad", "giga", "moon", "ape", "baby",
+    "wojak", "frog", "meme", "pump", "sol", "bonk", "wif",
+  ];
+
+  for (const word of hotNarratives) {
+    if (nameAndTicker.includes(word)) {
+      narrative += 10;
+      break;
+    }
+  }
+
+  if (pair.baseToken.symbol.length <= 4) narrative += 5;
+  else if (pair.baseToken.symbol.length <= 6) narrative += 2;
+
+  narrative = Math.min(15, narrative);
+
+  const total = Math.max(
+    0,
+    Math.min(100, safety + liquidity + momentum + age + narrative)
+  );
 
   return {
     total,
@@ -64,12 +117,18 @@ export function scorePair(
     liquidity,
     momentum,
     age,
+    narrative,
     details: {
       liquidityUsd,
       volumeM5,
       volLiqRatio,
       ageMinutes,
       priceUsd,
+      priceChangeM5,
+      buyCount,
+      sellCount,
+      buySellRatio,
+      fakeVolumeFlag,
     },
   };
 }

@@ -12,6 +12,10 @@ export interface FullSecurityResult {
     isHoneypot: boolean;
     isBlacklisted: boolean;
     isMintable: boolean;
+    isLiquidityLocked: boolean;
+    liquidityBurnt: boolean;
+    holderCount: number;
+    topHolderPercent: number;
     buyTax: number;
     sellTax: number;
   };
@@ -25,7 +29,6 @@ export async function runSecurityCheck(
 
   const goplus = await checkGoPlus(tokenAddress, chain);
 
-  // Only hard fail if GoPlus found something bad — skip if just no data
   if (!goplus.passed && goplus.reason !== "No GoPlus data found") {
     await logSkip(tokenAddress, chain, goplus.reason ?? "GoPlus failed", {
       mintAuthority: null,

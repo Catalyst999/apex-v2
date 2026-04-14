@@ -14,9 +14,24 @@ export interface RawPair {
   priceUsd: string;
   fdv: number;
   marketCap: number;
+  priceChange: {
+    m5: number;
+    h1: number;
+  };
+  txns: {
+    m5: {
+      buys: number;
+      sells: number;
+    };
+    h1: {
+      buys: number;
+      sells: number;
+    };
+  };
   volume: {
     m5: number;
     h1: number;
+    h24: number;
   };
   liquidity: {
     usd: number;
@@ -27,6 +42,26 @@ export interface RawPair {
 interface TokenProfile {
   chainId: string;
   tokenAddress: string;
+}
+
+function filterPairs(pairs: RawPair[], maxAgeMinutes = 120): RawPair[] {
+  const now = Date.now();
+  return pairs.filter((p) => {
+    if (!p.liquidity?.usd) return false;
+    if (!p.volume?.m5) return false;
+    if (!p.pairCreatedAt) return false;
+    const ageMinutes = (now - p.pairCreatedAt) / 1000 / 60;
+    if (ageMinutes > maxAgeMinutes) return false;
+    if (p.liquidity.usd < 5000) return false;
+    if (p.volume.m5 <= 0) return false;
+    if ((p.priceChange?.m5 ?? 0) < -10) return false;
+    const buys = p.txns?.m5?.buys ?? 0;
+    const sells = p.txns?.m5?.sells ?? 0;
+    if (sells > buys * 2) return false;
+    const volLiqRatio = p.volume.m5 / p.liquidity.usd;
+    if (volLiqRatio > 50) return false;
+    return true;
+  });
 }
 
 export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
@@ -59,20 +94,8 @@ export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
     }
 
     console.log(`📊 Total pairs fetched: ${allPairs.length}`);
-    if (allPairs.length > 0) {
-      console.log("Sample pair:", JSON.stringify(allPairs[0]).slice(0, 200));
-    }
 
-    const now = Date.now();
-    return allPairs.filter((p) => {
-      const ageMinutes = (now - p.pairCreatedAt) / 1000 / 60;
-      return (
-        p.liquidity?.usd >= 5000 &&
-        p.volume?.m5 > 0 &&
-        ageMinutes <= 120
-      );
-    });
-
+    return filterPairs(allPairs);
   } catch (err: any) {
     console.error("❌ DexScreener SOL error:", err.message);
     return [];
@@ -106,18 +129,24 @@ export async function fetchNewBscPairs(): Promise<RawPair[]> {
       await new Promise((r) => setTimeout(r, 300));
     }
 
-    const now = Date.now();
-    return allPairs.filter((p) => {
-      const ageMinutes = (now - p.pairCreatedAt) / 1000 / 60;
-      return (
-        p.liquidity?.usd >= 5000 &&
-        p.volume?.m5 > 0 &&
-        ageMinutes <= 120
-      );
-    });
-
+    return filterPairs(allPairs);
   } catch (err: any) {
     console.error("❌ DexScreener BSC error:", err.message);
     return [];
+  }
+}
+
+export async function fetchTokenData(
+  address: string,
+  chain: "solana" | "bsc"
+): Promise<RawPair | null> {
+  try {
+    const res = await axios.get(
+      `https://api.dexscreener.com/tokens/v1/${chain}/${address}`
+    );
+    const pairs = res.data ?? [];
+    return pairs[0] ?? null;
+  } catch {
+    return null;
   }
 }
