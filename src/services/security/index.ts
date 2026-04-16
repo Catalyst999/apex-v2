@@ -1,20 +1,11 @@
 // src/services/security/index.ts
-// Catalyst Apex Trader v2.1 — Security Orchestrator
-//
-// Check order (fastest rejections first):
-//   1. Bundle detection   — coordinated sniper launch
-//   2. Deployer history   — serial ruggist
-//   3. GoPlus API         — honeypot / blacklist / mintable / tax / liquidity
-//   4. Solana on-chain    — mint authority / freeze authority
-//
-// Any failure short-circuits the rest to save API calls.
 
-import { checkSolanaSecurity } from './solana';
-import { checkGoPlus }         from './goplus';
-import { checkBundle }         from './bundle-detector';
-import { checkDeployer }       from './deployer-check';
-import { supabase }            from '../../db/supabase';
-import { FEATURE_FLAGS }       from '../../core/config';
+import { checkSolanaSecurity } from "./solana";
+import { checkGoPlus }         from "./goplus";
+import { checkBundle }         from "./bundle-detector";
+import { checkDeployer }       from "./deployer-check";
+import { supabase }            from "../../db/supabase";
+import { FEATURE_FLAGS }       from "../../core/config";
 
 export interface FullSecurityResult {
   passed:           boolean;
@@ -33,160 +24,75 @@ export interface FullSecurityResult {
     buyTax:            number;
     sellTax:           number;
   };
-  // v2.1 additions
-  bundlePattern?:  string;
-  deployerRisk?:   number;
+  bundlePattern?:   string;
+  deployerRisk?:    number;
   deployerPattern?: string;
 }
 
-// ─── Main security check ───────────────────────────────────────────────────
+// ─── Main security check ───────────────────────────────────────────────────────
+// Order: bundle → deployer → GoPlus → Solana on-chain
+// Each step only runs if the previous passed — saves API calls.
 
 export async function runSecurityCheck(
   tokenAddress:  string,
-  chain:         'solana' | 'bsc',
-  poolCreatedAt?: number,   // unix seconds — required for bundle detection
-  deployer?:     string,    // deployer wallet — required for deployer check
+  chain:         "solana" | "bsc",
+  poolCreatedAt?: number,   // unix seconds — needed for bundle detection
+  deployer?:     string,    // deployer wallet — needed for deployer check
 ): Promise<FullSecurityResult> {
   console.log(`\n🔒 Running security checks: ${tokenAddress}`);
 
-  // ── Step 1: Bundle detection ─────────────────────────────────────────────
+  // ── Step 1: Bundle detection ──────────────────────────────────────────────
   if (FEATURE_FLAGS.enableBundleDetection && poolCreatedAt) {
     const bundle = await checkBundle(tokenAddress, poolCreatedAt);
     if (bundle.reject) {
-      await logSkip(tokenAddress, chain, bundle.reason, {
-        mintAuthority:    null,
-        freezeAuthority:  null,
-        topHolderPercent: 0,
-        goplusResult:     null,
-      });
-      return {
-        passed:          false,
-        reason:          bundle.reason,
-        mintAuthority:   null,
-        freezeAuthority: null,
-        topHolderPercent: 0,
-        goplus:          emptyGoplus(),
-        bundlePattern:   bundle.pattern,
-      };
+      await logSkip(tokenAddress, chain, bundle.reason, { mintAuthority: null, freezeAuthority: null, topHolderPercent: 0, goplusResult: null });
+      return { passed: false, reason: bundle.reason, mintAuthority: null, freezeAuthority: null, topHolderPercent: 0, goplus: emptyGoplus(), bundlePattern: bundle.pattern };
     }
     console.log(`✅ Bundle check passed (pattern: ${bundle.pattern})`);
   }
 
-  // ── Step 2: Deployer history ─────────────────────────────────────────────
+  // ── Step 2: Deployer history ──────────────────────────────────────────────
   if (FEATURE_FLAGS.enableDeployerCheck && deployer) {
     const dep = await checkDeployer(deployer);
     if (dep.reject) {
-      await logSkip(tokenAddress, chain, dep.reason, {
-        mintAuthority:    null,
-        freezeAuthority:  null,
-        topHolderPercent: 0,
-        goplusResult:     null,
-      });
-      return {
-        passed:           false,
-        reason:           dep.reason,
-        mintAuthority:    null,
-        freezeAuthority:  null,
-        topHolderPercent: 0,
-        goplus:           emptyGoplus(),
-        deployerRisk:     dep.riskScore,
-        deployerPattern:  dep.pattern,
-      };
+      await logSkip(tokenAddress, chain, dep.reason, { mintAuthority: null, freezeAuthority: null, topHolderPercent: 0, goplusResult: null });
+      return { passed: false, reason: dep.reason, mintAuthority: null, freezeAuthority: null, topHolderPercent: 0, goplus: emptyGoplus(), deployerRisk: dep.riskScore, deployerPattern: dep.pattern };
     }
     console.log(`✅ Deployer check passed (risk: ${dep.riskScore}/100 | pattern: ${dep.pattern})`);
   }
 
-  // ── Step 3: GoPlus API ───────────────────────────────────────────────────
+  // ── Step 3: GoPlus API ────────────────────────────────────────────────────
   const goplus = await checkGoPlus(tokenAddress, chain);
-  if (!goplus.passed && goplus.reason !== 'No GoPlus data found') {
-    await logSkip(tokenAddress, chain, goplus.reason ?? 'GoPlus failed', {
-      mintAuthority:    null,
-      freezeAuthority:  null,
-      topHolderPercent: 0,
-      goplusResult:     goplus.details,
-    });
-    return {
-      passed:           false,
-      reason:           goplus.reason,
-      mintAuthority:    null,
-      freezeAuthority:  null,
-      topHolderPercent: 0,
-      goplus:           goplus.details,
-    };
+  if (!goplus.passed && goplus.reason !== "No GoPlus data found") {
+    await logSkip(tokenAddress, chain, goplus.reason ?? "GoPlus failed", { mintAuthority: null, freezeAuthority: null, topHolderPercent: 0, goplusResult: goplus.details });
+    return { passed: false, reason: goplus.reason, mintAuthority: null, freezeAuthority: null, topHolderPercent: 0, goplus: goplus.details };
   }
   console.log(`✅ GoPlus check passed`);
 
-  // ── Step 4: Solana on-chain (Solana only) ────────────────────────────────
-  if (chain === 'solana') {
+  // ── Step 4: Solana on-chain ───────────────────────────────────────────────
+  if (chain === "solana") {
     const solana = await checkSolanaSecurity(tokenAddress);
     if (!solana.passed) {
-      await logSkip(tokenAddress, chain, solana.reason ?? 'Solana check failed', {
-        mintAuthority:    solana.mintAuthority,
-        freezeAuthority:  solana.freezeAuthority,
-        topHolderPercent: solana.topHolderPercent,
-        goplusResult:     goplus.details,
-      });
-      return {
-        passed:           false,
-        reason:           solana.reason,
-        mintAuthority:    solana.mintAuthority,
-        freezeAuthority:  solana.freezeAuthority,
-        topHolderPercent: solana.topHolderPercent,
-        goplus:           goplus.details,
-      };
+      await logSkip(tokenAddress, chain, solana.reason ?? "Solana check failed", { mintAuthority: solana.mintAuthority, freezeAuthority: solana.freezeAuthority, topHolderPercent: solana.topHolderPercent, goplusResult: goplus.details });
+      return { passed: false, reason: solana.reason, mintAuthority: solana.mintAuthority, freezeAuthority: solana.freezeAuthority, topHolderPercent: solana.topHolderPercent, goplus: goplus.details };
     }
     console.log(`✅ Solana on-chain check passed`);
-
-    console.log(`🛡️ ALL SECURITY CHECKS PASSED: ${tokenAddress}\n`);
-    return {
-      passed:           true,
-      mintAuthority:    null,
-      freezeAuthority:  null,
-      topHolderPercent: solana.topHolderPercent,
-      goplus:           goplus.details,
-    };
+    console.log(`🛡️  ALL SECURITY CHECKS PASSED: ${tokenAddress}\n`);
+    return { passed: true, mintAuthority: null, freezeAuthority: null, topHolderPercent: solana.topHolderPercent, goplus: goplus.details };
   }
 
-  // BSC path (no on-chain Solana check needed)
-  console.log(`🛡️ ALL SECURITY CHECKS PASSED: ${tokenAddress}\n`);
-  return {
-    passed:           true,
-    mintAuthority:    null,
-    freezeAuthority:  null,
-    topHolderPercent: 0,
-    goplus:           goplus.details,
-  };
+  console.log(`🛡️  ALL SECURITY CHECKS PASSED: ${tokenAddress}\n`);
+  return { passed: true, mintAuthority: null, freezeAuthority: null, topHolderPercent: 0, goplus: goplus.details };
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────────
-
-function emptyGoplus(): FullSecurityResult['goplus'] {
-  return {
-    isHoneypot:        false,
-    isBlacklisted:     false,
-    isMintable:        false,
-    isLiquidityLocked: false,
-    liquidityBurnt:    false,
-    holderCount:       0,
-    topHolderPercent:  0,
-    buyTax:            0,
-    sellTax:           0,
-  };
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function emptyGoplus(): FullSecurityResult["goplus"] {
+  return { isHoneypot: false, isBlacklisted: false, isMintable: false, isLiquidityLocked: false, liquidityBurnt: false, holderCount: 0, topHolderPercent: 0, buyTax: 0, sellTax: 0 };
 }
 
-async function logSkip(
-  address:  string,
-  chain:    string,
-  reason:   string,
-  details: {
-    mintAuthority:    string | null;
-    freezeAuthority:  string | null;
-    topHolderPercent: number;
-    goplusResult:     any;
-  }
-): Promise<void> {
+async function logSkip(address: string, chain: string, reason: string, details: { mintAuthority: string | null; freezeAuthority: string | null; topHolderPercent: number; goplusResult: any; }): Promise<void> {
   console.log(`🚫 SECURITY FAILED: ${address} — ${reason}`);
-  await supabase.from('security_logs').insert({
+  await supabase.from("security_logs").insert({
     address,
     chain,
     skip_reason:      reason,

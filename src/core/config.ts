@@ -1,9 +1,11 @@
+// src/core/config.ts
+
 import * as dotenv from "dotenv";
 import * as fs from "fs";
 import { Keypair } from "@solana/web3.js";
 dotenv.config();
 
-// ─── Helper ──────────────────────────────────────────────────────────────────
+// ─── Helper ───────────────────────────────────────────────────────────────────
 function requireEnv(key: string): string {
   const value = process.env[key];
   if (!value) throw new Error(`Missing env variable: ${key}`);
@@ -12,12 +14,10 @@ function requireEnv(key: string): string {
 
 // ─── Solana Keypair Loader ────────────────────────────────────────────────────
 function loadSolanaKeypair(): Keypair {
-  // Railway cloud — load from env variable
   if (process.env.SOLANA_PRIVATE_KEY) {
     const parsed = JSON.parse(process.env.SOLANA_PRIVATE_KEY);
     return Keypair.fromSecretKey(Uint8Array.from(parsed));
   }
-  // Local dev — load from file
   const keyPath = process.env.SOLANA_KEY_PATH ?? "";
   if (!fs.existsSync(keyPath)) {
     throw new Error(`Solana key not found at: ${keyPath}`);
@@ -90,12 +90,18 @@ export const STRATEGY = {
     minSolLamports:      10_000,
   },
   security: {
-    maxTopHolderPercent: 15,
+    // Tightened from 5% to 3.5% based on expert guide recommendation
+    maxTopHolderPercent: 3.5,
+  },
+  scanner: {
+    // Vol must be at least 80% of MCap — below this = almost certainly bundled
+    minVolMcapRatio: 0.8,
+    // Max trades per day — concentrated conviction wins over spreading thin
+    maxDailyTrades:  10,
   },
 };
 
 // ─── Helius ───────────────────────────────────────────────────────────────────
-// Used for bundle detection, deployer profiling, and (later) real-time webhooks.
 export const HELIUS = {
   apiKey:        process.env.HELIUS_API_KEY        ?? "",
   rpcUrl:        process.env.HELIUS_RPC_URL        ?? "",
@@ -103,15 +109,12 @@ export const HELIUS = {
 };
 
 // ─── Server ───────────────────────────────────────────────────────────────────
-// Used when Helius webhooks are active — Railway needs a public URL + open port.
 export const SERVER = {
   publicUrl:   process.env.PUBLIC_URL    ?? "",
   webhookPort: parseInt(process.env.WEBHOOK_PORT ?? "3001"),
 };
 
 // ─── Feature Flags ────────────────────────────────────────────────────────────
-// Turn each upgrade on/off via .env without touching code.
-// Start with bundle + deployer set to true. Leave the rest false for now.
 export const FEATURE_FLAGS = {
   enableBundleDetection: process.env.ENABLE_BUNDLE_DETECTION === "true",
   enableDeployerCheck:   process.env.ENABLE_DEPLOYER_CHECK   === "true",
@@ -131,6 +134,8 @@ export function printConfig(): void {
 ║ SOL Wallet   : ${SOLANA.keypair.publicKey.toBase58().slice(0, 20)}...  ║
 ║ Bundle Check : ${(FEATURE_FLAGS.enableBundleDetection ? "ON" : "OFF").padEnd(22)}║
 ║ Deployer Chk : ${(FEATURE_FLAGS.enableDeployerCheck   ? "ON" : "OFF").padEnd(22)}║
+║ Max Holder % : ${String(STRATEGY.security.maxTopHolderPercent + "%").padEnd(22)}║
+║ Daily Trade  : ${String("max " + STRATEGY.scanner.maxDailyTrades).padEnd(22)}║
 ╚══════════════════════════════════════╝
   `);
 }
