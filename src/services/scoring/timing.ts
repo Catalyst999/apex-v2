@@ -1,6 +1,8 @@
 // Guide: trade during high volume windows, avoid low volume danger zones
 // All times in WAT (West Africa Time = UTC+1)
 
+import { MODE } from "../../core/config";
+
 export interface TimingResult {
   allowed: boolean;
   window: string;
@@ -8,6 +10,18 @@ export interface TimingResult {
 }
 
 export function checkTradingWindow(): TimingResult {
+  // In testing mode, allow trading at any time
+  if (MODE === "testing") {
+    const now = new Date();
+    const watHour = (now.getUTCHours() + 1) % 24;
+    const watMinute = now.getUTCMinutes();
+    return {
+      allowed: true,
+      window: "TESTING",
+      reason: `Testing mode — all times allowed (${formatWAT(watHour, watMinute)} WAT)`,
+    };
+  }
+
   // Get current WAT time
   const now = new Date();
   const watHour = (now.getUTCHours() + 1) % 24;

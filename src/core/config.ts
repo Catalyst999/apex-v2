@@ -94,8 +94,8 @@ export const STRATEGY = {
     maxTopHolderPercent: 3.5,
   },
   scanner: {
-    // Vol must be at least 80% of MCap — below this = almost certainly bundled
-    minVolMcapRatio: 0.8,
+    // Vol must be at least 5% of MCap — below this = likely bundled
+    minVolMcapRatio: 0.05,
     // Max trades per day — concentrated conviction wins over spreading thin
     maxDailyTrades:  10,
   },
@@ -116,7 +116,7 @@ export const SERVER = {
 
 // ─── Feature Flags ────────────────────────────────────────────────────────────
 export const FEATURE_FLAGS = {
-  enableBundleDetection: process.env.ENABLE_BUNDLE_DETECTION === "true",
+  enableBundleDetection: MODE === "live" ? process.env.ENABLE_BUNDLE_DETECTION === "true" : false,
   enableDeployerCheck:   process.env.ENABLE_DEPLOYER_CHECK   === "true",
   useHeliusWebhooks:     process.env.USE_HELIUS_WEBHOOKS     === "true",
   usePumpFunMonitor:     process.env.USE_PUMP_FUN_MONITOR    === "true",

@@ -1,6 +1,7 @@
 import { printConfig } from "./core/config";
 import { supabase } from "./db/supabase";
 import { startBot } from "./services/telegram/bot";
+import { startServer } from "./server";
 
 async function boot() {
   printConfig();
@@ -12,6 +13,7 @@ async function boot() {
   }
   console.log("✅ Supabase connected");
 
+  startServer();
   await startBot();
 }
 
