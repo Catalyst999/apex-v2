@@ -34,27 +34,59 @@ export interface RawPair {
   liquidity: {
     usd: number;
   };
-  pairCreatedAt: number;  // unix milliseconds
-  deployer?:     string;  // wallet that deployed the token (available via Helius later)
+  pairCreatedAt: number;
+  deployer?:     string;
 }
 
-// ─── Filter ───────────────────────────────────────────────────────────────────
-// Hard pre-filters — cheapest checks run first to avoid wasting API calls.
+// ─── Known large cap addresses to hard-reject ─────────────────────────────────
+// These are real established coins that sometimes appear as "new pairs"
+// when someone creates a new pool for them. We never want to trade these.
+const LARGE_CAP_SYMBOLS = new Set([
+  "DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI",
+  "SOL",  "BTC",  "ETH",  "BNB",  "USDC", "USDT",
+  "JUP",  "RAY",  "ORCA", "SAMO", "MEME",
+]);
 
+// ─── Suspicious name patterns ─────────────────────────────────────────────────
+// Names that are almost always low-quality cash grabs
+const TRASH_PATTERNS = [
+  /fart/i, /ass(?:teroid|hole|wipe)/i, /shit/i, /cum(?:\s|$)/i,
+  /rug/i,  /scam/i, /ponzi/i,
+];
+
+// ─── Filter ───────────────────────────────────────────────────────────────────
 function filterPairs(pairs: RawPair[], maxAgeMinutes = 120): RawPair[] {
   const now = Date.now();
 
   return pairs.filter((p) => {
-    // Must have core data
     if (!p.liquidity?.usd)  return false;
     if (!p.volume?.m5)      return false;
     if (!p.pairCreatedAt)   return false;
 
-    // Age filter
     const ageMinutes = (now - p.pairCreatedAt) / 1000 / 60;
     if (ageMinutes > maxAgeMinutes) return false;
 
-    // Minimum liquidity — raised to $8k to cut noise
+    // Hard reject known large caps
+    if (LARGE_CAP_SYMBOLS.has(p.baseToken.symbol?.toUpperCase())) {
+      console.log(`⛔ Large cap rejected: ${p.baseToken.symbol}`);
+      return false;
+    }
+
+    // Hard reject MCap above $500k — we only trade small caps
+    const mcap = p.marketCap ?? p.fdv ?? 0;
+    if (mcap > 500_000) {
+      console.log(`⛔ MCap too high ($${(mcap/1000).toFixed(0)}k): ${p.baseToken.symbol}`);
+      return false;
+    }
+
+    // Hard reject trash name patterns
+    const fullName = `${p.baseToken.name} ${p.baseToken.symbol}`;
+    if (TRASH_PATTERNS.some((pat) => pat.test(fullName))) {
+      console.log(`⛔ Trash name rejected: ${p.baseToken.name}`);
+      return false;
+    }
+
+    // Minimum liquidity
     if (p.liquidity.usd < 8000) return false;
 
     // Must have positive 5-min volume
@@ -68,21 +100,26 @@ function filterPairs(pairs: RawPair[], maxAgeMinutes = 120): RawPair[] {
     const sells = p.txns?.m5?.sells ?? 0;
     if (sells > buys * 2) return false;
 
-    // Drop fake volume — vol/liq above 50 is wash trading
+    // Minimum buyer activity — at least 10 buys in last 5 min
+    if (buys < 10) {
+      console.log(`⛔ Not enough buyers (${buys}): ${p.baseToken.symbol}`);
+      return false;
+    }
+
+    // Drop fake volume
     const volLiqRatio = p.volume.m5 / p.liquidity.usd;
     if (volLiqRatio > 50) return false;
 
-    // Vol/MCap ratio check — below 80% is almost certainly a bundle (per expert guide)
-    const mcap = p.marketCap ?? p.fdv ?? 0;
+    // Vol/MCap ratio check
     if (mcap > 0) {
       const volMcapRatio = p.volume.m5 / mcap;
       if (volMcapRatio < STRATEGY.scanner.minVolMcapRatio) {
-        console.log(`⚠️  Vol/MCap too low (${(volMcapRatio * 100).toFixed(0)}%): ${p.baseToken.symbol} — likely bundled`);
+        console.log(`⛔ Vol/MCap too low (${(volMcapRatio * 100).toFixed(0)}%): ${p.baseToken.symbol}`);
         return false;
       }
     }
 
-    // Drop stablecoin pairs — we only want memecoins
+    // Drop stablecoin pairs
     const quote = p.quoteToken?.symbol?.toUpperCase() ?? "";
     if (["USDC", "USDT", "BUSD", "DAI"].includes(quote)) return false;
 
@@ -127,7 +164,6 @@ export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
 
     console.log(`📊 Total pairs fetched: ${allPairs.length}`);
 
-    // Enrich with deployer where available
     const enriched: RawPair[] = allPairs.map((pair: any) => ({
       ...pair,
       deployer: pair.deployer ?? pair.info?.deployer ?? undefined,

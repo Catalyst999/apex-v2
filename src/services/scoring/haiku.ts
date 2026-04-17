@@ -1,77 +1,72 @@
 // src/services/scoring/haiku.ts
-// Catalyst Apex Trader v2.1 — Signal Generator
-//
-// Raised BUY thresholds significantly based on real signal quality data.
-// Previous thresholds were letting through too much noise.
+// Rule-based signal engine.
+// Swap analyzeWithHaiku body for real Claude Haiku when API credits are funded.
 
 import { RawPair }        from "../scanner/dexscreener";
 import { ScoreBreakdown } from "./confidence";
 
 export interface HaikuResult {
-  signal:     "BUY" | "WAIT" | "AVOID";
+  signal:    "BUY" | "WAIT" | "AVOID";
   brandScore: number;
-  entry:      string;
-  target:     string;
-  stopLoss:   string;
-  rugRisk:    number;
-  reason:     string;
-  narrative:  string;
+  entry:     string;
+  target:    string;
+  stopLoss:  string;
+  rugRisk:   number;
+  reason:    string;
+  narrative: string;
 }
 
-// ─── Brand scorer ─────────────────────────────────────────────────────────────
-// How memorable and marketable is this coin's name/ticker?
-
+// ─── Brand score ──────────────────────────────────────────────────────────────
 function calcBrandScore(name: string, symbol: string): number {
-  let score = 40;  // start lower — earn it
-  const n   = name.toLowerCase();
-  const s   = symbol.toLowerCase();
+  let score = 40; // start lower — earn it
+  const n = name.toLowerCase();
+  const s = symbol.toLowerCase();
 
   // Short memorable ticker
   if      (s.length <= 3) score += 20;
-  else if (s.length <= 4) score += 15;
+  else if (s.length <= 4) score += 12;
   else if (s.length <= 6) score += 5;
 
-  // Strong narrative words
-  const strongWords = ["doge", "pepe", "trump", "elon", "dog", "cat", "bonk", "wif", "pnut", "peanut"];
+  // Strong narrative keywords — exact word match only
+  const strongWords = ["trump", "elon", "maga", "doge", "pepe", "ai", "dog", "cat",
+                       "based", "chad", "giga", "moon", "ape", "wojak", "pnut", "peanut"];
   for (const word of strongWords) {
-    if (n.includes(word) || s.includes(word)) { score += 20; break; }
+    const regex = new RegExp(`\\b${word}\\b`, "i");
+    if (regex.test(n) || regex.test(s)) { score += 20; break; }
   }
 
-  // Mid-tier narrative words
-  const midWords = ["moon", "ape", "chad", "giga", "baby", "based", "ai", "frog", "wojak"];
-  for (const word of midWords) {
-    if (n.includes(word) || s.includes(word)) { score += 10; break; }
-  }
-
-  // Penalty for generic/boring names
-  const genericWords = ["token", "coin", "finance", "protocol", "swap", "safe", "inu2"];
+  // Generic word penalty
+  const genericWords = ["token", "coin", "finance", "protocol", "swap"];
   for (const word of genericWords) {
     if (n.includes(word)) { score -= 15; break; }
   }
 
-  // Penalty for long unmemorable names (>3 words)
-  const wordCount = name.trim().split(/\s+/).length;
-  if (wordCount > 3) score -= 10;
+  // Single generic word name penalty
+  const genericNames = ["fat", "him", "her", "big", "old", "new", "hot", "cool", "good", "bad", "baba", "hopu"];
+  if (genericNames.includes(n.trim())) score -= 20;
 
   return Math.min(100, Math.max(0, score));
 }
 
-// ─── Narrative detector ───────────────────────────────────────────────────────
-
 function detectNarrative(name: string, symbol: string): string {
-  const text = (name + " " + symbol).toLowerCase();
-  if (/trump|maga|biden|harris|president|potus/.test(text))                    return "political";
-  if (/\bdoge\b|dogecoin|\bdog\b|shib|inu\b|bonk|wif\b/.test(text))           return "dog";
-  if (/\bcat\b|kitty|neko|meow/.test(text))                                    return "cat";
-  if (/\bai\b|\bgpt\b|neural|robot\b|agent\b/.test(text))                      return "AI";
-  if (/pepe|frog|\bwojak\b/.test(text))                                        return "pepe";
-  if (/elon|musk|tesla|spacex/.test(text))                                     return "elon";
-  if (/\bmoon\b|mars\b|space\b|galaxy/.test(text))                             return "space";
-  if (/\bchad\b|based\b|giga\b/.test(text))                                    return "community";
+  const text = `${name} ${symbol}`.toLowerCase();
+  if (/\b(trump|maga|biden|harris|potus|president|america)\b/.test(text)) return "political";
+  if (/\b(elon|musk|tesla|spacex|grok)\b/.test(text))                     return "elon";
+  if (/\b(doge|shib|inu|dog|woof|puppy|doggo)\b/.test(text))              return "dog";
+  if (/\b(cat|kitty|meow|neko|kitten)\b/.test(text))                      return "cat";
+  if (/\b(pepe|frog|rare|wojak|apu)\b/.test(text))                        return "pepe";
+  if (/\b(ai|gpt|llm|neural|robot|agent)\b/.test(text))                   return "AI";
+  if (/\b(moon|mars|space|galaxy|rocket)\b/.test(text))                   return "space";
+  if (/\b(based|chad|giga|sigma|ape|degen)\b/.test(text))                 return "community";
   return "meme";
 }
 
-// ─── Main signal generator ────────────────────────────────────────────────────
+// ─── Main signal engine ───────────────────────────────────────────────────────
+// Raised thresholds based on data analysis:
+// - Outlier BUY: score >= 75 AND brandScore >= 65 (was 65/65)
+// - Standard BUY: score >= 80 (was 75)
+// - WAIT: score >= 70 for outlier, >= 72 for standard
+// - Everything else: AVOID
 
 export async function analyzeWithHaiku(
   pair:     RawPair,
@@ -81,48 +76,26 @@ export async function analyzeWithHaiku(
   const price      = parseFloat(pair.priceUsd ?? "0");
   const brandScore = calcBrandScore(pair.baseToken.name, pair.baseToken.symbol);
   const narrative  = detectNarrative(pair.baseToken.name, pair.baseToken.symbol);
-  const buyCount   = score.details.buyCount;
-  const bsr        = score.details.buySellRatio;
-  const volMcap    = score.details.volMcapRatio;
 
-  let signal: "BUY" | "WAIT" | "AVOID" = "AVOID";
-  let rugRisk = 60;
+  let signal:  "BUY" | "WAIT" | "AVOID" = "AVOID";
+  let rugRisk  = 50;
 
   if (strategy === "outlier") {
-    // Outlier needs: brand score + momentum confirmation
-    // Raised from 65 to 72 — only take high-conviction outlier plays
-    const momentumOk = bsr >= 2.5 && buyCount >= 10 && volMcap >= 0.8;
-    if (brandScore >= 72 && momentumOk) {
-      signal  = "BUY";
-      rugRisk = 35;
-    } else if (brandScore >= 60 || momentumOk) {
-      signal  = "WAIT";
-      rugRisk = 45;
-    } else {
-      signal  = "AVOID";
-      rugRisk = 65;
-    }
-
+    // Outlier needs both high score AND strong brand
+    if      (score.total >= 75 && brandScore >= 65) { signal = "BUY";   rugRisk = 35; }
+    else if (score.total >= 70)                     { signal = "WAIT";  rugRisk = 45; }
+    else                                            { signal = "AVOID"; rugRisk = 65; }
   } else if (strategy === "standard") {
-    // Standard needs high score AND real momentum
-    // Raised minimum from 55 to 72 — cuts most of the current trash
-    const strongMomentum = bsr >= 2 && buyCount >= 15 && volMcap >= 0.8;
-    const veryStrong     = bsr >= 3 && buyCount >= 20 && volMcap >= 1.0;
+    // Standard needs higher confidence score
+    if      (score.total >= 80) { signal = "BUY";   rugRisk = Math.max(10, 100 - score.total); }
+    else if (score.total >= 72) { signal = "WAIT";  rugRisk = Math.max(20, 110 - score.total); }
+    else                        { signal = "AVOID"; rugRisk = Math.max(30, 120 - score.total); }
+  }
 
-    if (score.total >= 78 && strongMomentum) {
-      signal  = "BUY";
-      rugRisk = Math.max(15, 100 - score.total);
-    } else if (score.total >= 72 && veryStrong) {
-      // Lower score but exceptional momentum — still qualifies
-      signal  = "BUY";
-      rugRisk = Math.max(20, 100 - score.total);
-    } else if (score.total >= 65) {
-      signal  = "WAIT";
-      rugRisk = Math.max(25, 100 - score.total);
-    } else {
-      signal  = "AVOID";
-      rugRisk = Math.max(40, 100 - score.total);
-    }
+  // Hard block: if brand score is very low, never BUY regardless of other scores
+  if (brandScore < 40 && signal === "BUY") {
+    signal  = "WAIT";
+    rugRisk = Math.min(rugRisk + 15, 90);
   }
 
   const entry    = price;
@@ -131,10 +104,10 @@ export async function analyzeWithHaiku(
 
   const reason =
     signal === "BUY"
-      ? `${narrative} narrative | Score ${score.total}/100 | B/S ratio ${bsr.toFixed(1)} | ${buyCount} buys in 5m | Vol/MCap ${(volMcap * 100).toFixed(0)}%`
+      ? `${narrative} narrative, score ${score.total}/100, brand ${brandScore}/100. Vol/Liq ${score.details.volLiqRatio.toFixed(2)}x confirms momentum.`
       : signal === "WAIT"
-      ? `Watching — momentum building but needs confirmation. Score ${score.total}/100 | B/S ${bsr.toFixed(1)}`
-      : `Below threshold. Score ${score.total}/100 — insufficient momentum for entry.`;
+      ? `Decent setup but needs confirmation. Score ${score.total}/100, brand ${brandScore}/100 — watch for volume spike.`
+      : `Low confidence — score ${score.total}/100, brand ${brandScore}/100. Risk too high.`;
 
   return {
     signal,
