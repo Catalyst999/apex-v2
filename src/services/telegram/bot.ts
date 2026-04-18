@@ -179,7 +179,7 @@ export async function startBot(): Promise<void> {
 
     const startServer = (): Promise<void> => {
       return new Promise((resolve, reject) => {
-        const server = app.listen(SERVER.webhookPort, "0.0.0.0", () => {
+        const server = app.listen(SERVER.webhookPort, () => {
           console.log(`🌐 Webhook server listening on port ${SERVER.webhookPort}`);
           retryCount = 0;
           resolve();
