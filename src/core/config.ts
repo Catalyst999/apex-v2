@@ -112,7 +112,7 @@ export const HELIUS = {
 // ─── Server ───────────────────────────────────────────────────────────────────
 export const SERVER = {
   publicUrl:   process.env.PUBLIC_URL    ?? "",
-  webhookPort: parseInt(process.env.WEBHOOK_PORT ?? "3001"),
+  webhookPort: parseInt(process.env.WEBHOOK_PORT ?? "3002"),
 };
 
 // ─── Feature Flags ────────────────────────────────────────────────────────────
