@@ -112,14 +112,14 @@ export const HELIUS = {
 // ─── Server ───────────────────────────────────────────────────────────────────
 export const SERVER = {
   publicUrl:   process.env.PUBLIC_URL    ?? "",
-  webhookPort: parseInt(process.env.WEBHOOK_PORT ?? "3002"),
+  webhookPort: parseInt(process.env.WEBHOOK_PORT ?? "8080"),
 };
 
 // ─── Feature Flags ────────────────────────────────────────────────────────────
 export const FEATURE_FLAGS = {
   enableBundleDetection: process.env.ENABLE_BUNDLE_DETECTION === "true",
   enableDeployerCheck:   process.env.ENABLE_DEPLOYER_CHECK   === "true",
-  useHeliusWebhooks:     process.env.USE_HELIUS_WEBHOOKS     === "true" && MODE === "live",
+  useHeliusWebhooks:     process.env.USE_HELIUS_WEBHOOKS     === "true",
   usePumpFunMonitor:     process.env.USE_PUMP_FUN_MONITOR    === "true",
   useOutlierV2:          process.env.USE_OUTLIER_V2          === "true",
 };
