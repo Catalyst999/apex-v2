@@ -29,7 +29,8 @@ function loadSolanaKeypair(): Keypair {
 
 // ─── Mode ─────────────────────────────────────────────────────────────────────
 export type TradeMode = "testing" | "live";
-export const MODE = (process.env.TRADE_MODE ?? "testing") as TradeMode;
+const requestedMode = (process.env.TRADE_MODE ?? "testing").toLowerCase();
+export const MODE: TradeMode = requestedMode === "live" || requestedMode === "production" ? "live" : "testing";
 export const TRADE_AMOUNT_USD = MODE === "live" ? 5 : 3;
 
 // ─── Solana ───────────────────────────────────────────────────────────────────
@@ -116,7 +117,7 @@ export const SERVER = {
 
 // ─── Feature Flags ────────────────────────────────────────────────────────────
 export const FEATURE_FLAGS = {
-  enableBundleDetection: MODE === "live" ? process.env.ENABLE_BUNDLE_DETECTION === "true" : false,
+  enableBundleDetection: process.env.ENABLE_BUNDLE_DETECTION === "true",
   enableDeployerCheck:   process.env.ENABLE_DEPLOYER_CHECK   === "true",
   useHeliusWebhooks:     process.env.USE_HELIUS_WEBHOOKS     === "true",
   usePumpFunMonitor:     process.env.USE_PUMP_FUN_MONITOR    === "true",
