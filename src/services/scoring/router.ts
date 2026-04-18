@@ -1,5 +1,4 @@
 // src/services/scoring/router.ts
-// Catalyst Apex Trader v2.1 — Strategy Router
 
 import { RawPair }            from "../scanner/dexscreener";
 import { FullSecurityResult } from "../security";
@@ -17,51 +16,43 @@ export interface RouterResult {
 }
 
 export function routePair(pair: RawPair, security: FullSecurityResult): RouterResult {
-  const score       = scorePair(pair, security);
-  const now         = Date.now();
-  const ageMinutes  = (now - pair.pairCreatedAt) / 1000 / 60;
-  const mcap        = pair.marketCap ?? pair.fdv ?? 0;
-  const volLiqRatio = score.details.volLiqRatio;
-  const bsr         = score.details.buySellRatio;
+  const score         = scorePair(pair, security);
+  const now           = Date.now();
+  const ageMinutes    = (now - pair.pairCreatedAt) / 1000 / 60;
+  const mcap          = pair.marketCap ?? pair.fdv ?? 0;
+  const volLiqRatio   = score.details.volLiqRatio;
+  const bsr           = score.details.buySellRatio;
   const priceChangeM5 = score.details.priceChangeM5;
-  const buyCount    = score.details.buyCount;
-  const volMcapRatio = score.details.volMcapRatio;
+  const buyCount      = score.details.buyCount;
+  const volMcapRatio  = score.details.volMcapRatio;
 
-  // Hard skip: score 0 means hard disqualified in confidence.ts
+  // ── Hard skips ─────────────────────────────────────────────────────────────
+
   if (score.total === 0) {
-    return { strategy: "skip", score, reason: "Hard disqualified — MCap ceiling or insufficient buyers", skipReason: "hard_fail" };
+    return { strategy: "skip", score, reason: "Hard disqualified", skipReason: "hard_fail" };
   }
 
-  // Hard skip: fake volume
   if (score.details.fakeVolumeFlag) {
     return { strategy: "skip", score, reason: "Fake volume detected", skipReason: "fake_volume" };
   }
 
-  // Hard skip: active dumping
   if (priceChangeM5 < -15) {
     return { strategy: "skip", score, reason: `Price dumping ${priceChangeM5.toFixed(1)}% in 5m`, skipReason: "dumping" };
   }
 
-  // Hard skip: heavy sell pressure with real volume
   if (bsr < 0.5 && score.details.sellCount > 10) {
     return { strategy: "skip", score, reason: `Heavy sell pressure — ratio: ${bsr.toFixed(2)}`, skipReason: "sell_pressure" };
   }
 
-  // Hard skip: not enough real buyers
   if (buyCount < 5) {
     return { strategy: "skip", score, reason: `Only ${buyCount} buys in 5m — insufficient activity`, skipReason: "low_activity" };
-  }
-
-  // Hard skip: Vol/MCap too low — almost certainly bundled
-  if (mcap > 0 && volMcapRatio < STRATEGY.scanner.minVolMcapRatio) {
-    return { strategy: "skip", score, reason: `Vol/MCap ${(volMcapRatio * 100).toFixed(0)}% — below 80% threshold`, skipReason: "low_vol_mcap" };
   }
 
   const standardMcapOk = mcap === 0 || mcap <= 500_000;
   const outlierMcapOk  = mcap === 0 || mcap <= 150_000;
 
-  // ── Outlier detection ─────────────────────────────────────────────────────
-  // Four combos — but now require stronger confirmation signals
+  // ── Outlier detection ──────────────────────────────────────────────────────
+  // Four combos — each focused on a different edge signal
 
   // Combo A: Early velocity — young token, high vol/liq, strong buyers
   const comboA = ageMinutes <= 30 && volLiqRatio >= 1.5 && bsr >= 2 && buyCount >= 10;
@@ -69,14 +60,14 @@ export function routePair(pair: RawPair, security: FullSecurityResult): RouterRe
   // Combo B: Late ignition — older token suddenly catching fire
   const comboB = ageMinutes > 30 && ageMinutes <= 120 && volLiqRatio >= 3.0 && bsr >= 2.5;
 
-  // Combo C: Narrative rocket — clear narrative + strong momentum
+  // Combo C: Narrative rocket — clear narrative + strong momentum + price moving
   const comboC = score.narrative >= 8 && volLiqRatio >= 2.0 && priceChangeM5 >= 15 && buyCount >= 15;
 
-  // Combo D: Smart money — exceptional buy pressure across the board
+  // Combo D: Smart money — exceptional buy pressure, not a pump
   const comboD = bsr >= 4 && volLiqRatio >= 2.0 && priceChangeM5 <= 50 && buyCount >= 20;
 
-  const isOutlier      = comboA || comboB || comboC || comboD;
-  const outlierTiming  = checkOutlierWindow();
+  const isOutlier       = comboA || comboB || comboC || comboD;
+  const outlierTiming   = checkOutlierWindow();
   const extremeVelocity = volLiqRatio >= 5.0 || bsr >= 5;
 
   if (isOutlier && outlierMcapOk && (outlierTiming.allowed || extremeVelocity)) {
@@ -88,15 +79,19 @@ export function routePair(pair: RawPair, security: FullSecurityResult): RouterRe
     };
   }
 
-  // ── Standard detection ────────────────────────────────────────────────────
+  // ── Standard detection ─────────────────────────────────────────────────────
   const standardTiming = checkTradingWindow();
   if (!standardTiming.allowed) {
     return { strategy: "skip", score, reason: `⏰ ${standardTiming.reason}`, skipReason: "bad_timing" };
   }
 
-  // Raised minimum score from 55 to 70 for standard
-  // Also require minimum buy activity and vol/mcap
-  const standardMomentumOk = bsr >= 1.5 && buyCount >= 10 && volMcapRatio >= 0.8;
+  // Standard requires:
+  // - Score >= 70
+  // - Good buy/sell ratio (>= 1.5)
+  // - Minimum buyer count (>= 10)
+  // NOTE: vol/mcap check removed from router — already handled in scanner
+  // This was causing false rejections on tokens with strong real buying
+  const standardMomentumOk = bsr >= 1.5 && buyCount >= 10;
 
   if (score.total >= 70 && standardMcapOk && standardMomentumOk) {
     return {
@@ -106,11 +101,11 @@ export function routePair(pair: RawPair, security: FullSecurityResult): RouterRe
     };
   }
 
-  // Build skip reason
+  // Build detailed skip reason
   const reasons: string[] = [];
-  if (!standardMcapOk)                     reasons.push(`MCap too high: $${(mcap / 1000).toFixed(0)}k`);
-  if (score.total < 70)                    reasons.push(`Score too low: ${score.total}/100`);
-  if (!standardMomentumOk)                 reasons.push(`Momentum weak: B/S ${bsr.toFixed(2)}, ${buyCount} buys`);
+  if (!standardMcapOk)    reasons.push(`MCap too high: $${(mcap / 1000).toFixed(0)}k`);
+  if (score.total < 70)   reasons.push(`Score too low: ${score.total}/100`);
+  if (!standardMomentumOk) reasons.push(`Momentum weak: B/S ${bsr.toFixed(2)}, ${buyCount} buys`);
 
   return {
     strategy:   "skip",
