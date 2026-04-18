@@ -173,29 +173,40 @@ export async function startBot(): Promise<void> {
       await processPair(pair, webhookPair.poolCreatedAt, webhookPair.deployer);
     });
 
-    // Start webhook server with retry logic for port conflicts
-    const startServer = () => {
-      return new Promise<void>((resolve) => {
-        const server = app.listen(SERVER.webhookPort, () => {
+    // Start webhook server with exponential backoff retry
+    const MAX_RETRIES = 12;
+    let retryCount = 0;
+
+    const startServer = (): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        const server = app.listen(SERVER.webhookPort, "0.0.0.0", () => {
           console.log(`🌐 Webhook server listening on port ${SERVER.webhookPort}`);
+          retryCount = 0;
           resolve();
         });
 
         server.on("error", (err: any) => {
-          if (err.code === "EADDRINUSE") {
-            console.error(`❌ Port ${SERVER.webhookPort} already in use. Retrying in 3 seconds...`);
+          if (err.code === "EADDRINUSE" && retryCount < MAX_RETRIES) {
+            retryCount++;
+            const delayMs = Math.min(2000 + retryCount * 1000, 20000); // 2-20s backoff
+            console.error(`❌ Port ${SERVER.webhookPort} in use (attempt ${retryCount}/${MAX_RETRIES}). Waiting ${delayMs}ms...`);
             server.close();
             setTimeout(() => {
-              startServer().then(resolve);
-            }, 3000);
+              startServer().then(resolve).catch(reject);
+            }, delayMs);
           } else {
-            throw err;
+            reject(err);
           }
         });
       });
     };
 
-    await startServer();
+    try {
+      await startServer();
+    } catch (err) {
+      console.error("❌ Failed to start webhook server after all retries:", err);
+      throw err;
+    }
 
     // Register with Helius API — tells Helius where to send events
     await registerHeliusWebhook();
