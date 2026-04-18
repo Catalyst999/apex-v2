@@ -119,7 +119,7 @@ export const SERVER = {
 export const FEATURE_FLAGS = {
   enableBundleDetection: process.env.ENABLE_BUNDLE_DETECTION === "true",
   enableDeployerCheck:   process.env.ENABLE_DEPLOYER_CHECK   === "true",
-  useHeliusWebhooks:     process.env.USE_HELIUS_WEBHOOKS     === "true",
+  useHeliusWebhooks:     process.env.USE_HELIUS_WEBHOOKS     === "true" && MODE === "live",
   usePumpFunMonitor:     process.env.USE_PUMP_FUN_MONITOR    === "true",
   useOutlierV2:          process.env.USE_OUTLIER_V2          === "true",
 };
