@@ -18,11 +18,3 @@ async function boot() {
 }
 
 boot();
-
-
-
-console.log("DEBUG ENV:", {
-  ENABLE_BUNDLE_DETECTION: process.env.ENABLE_BUNDLE_DETECTION,
-  ENABLE_DEPLOYER_CHECK:   process.env.ENABLE_DEPLOYER_CHECK,
-  USE_HELIUS_WEBHOOKS:     process.env.USE_HELIUS_WEBHOOKS,
-});
