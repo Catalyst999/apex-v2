@@ -173,9 +173,22 @@ export async function startBot(): Promise<void> {
       await processPair(pair, webhookPair.poolCreatedAt, webhookPair.deployer);
     });
 
-    // Start webhook server
-    app.listen(SERVER.webhookPort, () => {
+    // Start webhook server with error handling
+    const server = app.listen(SERVER.webhookPort, () => {
       console.log(`🌐 Webhook server listening on port ${SERVER.webhookPort}`);
+    });
+
+    server.on("error", (err: any) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`❌ Port ${SERVER.webhookPort} already in use. Retrying in 5 seconds...`);
+        setTimeout(() => {
+          server.listen(SERVER.webhookPort, () => {
+            console.log(`🌐 Webhook server listening on port ${SERVER.webhookPort} (retry)`);
+          });
+        }, 5000);
+      } else {
+        throw err;
+      }
     });
 
     // Register with Helius API — tells Helius where to send events
