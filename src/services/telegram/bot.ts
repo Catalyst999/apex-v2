@@ -43,6 +43,7 @@ export function setAutoTrade(value: boolean): void {
 }
 
 // ─── Core pipeline ────────────────────────────────────────────────────────────
+// Runs for every new pair regardless of source (Helius or DexScreener)
 
 async function processPair(pair: any, poolCreatedAt?: number, deployer?: string): Promise<void> {
   const address = pair.baseToken?.address ?? pair.tokenAddress;
@@ -61,7 +62,7 @@ async function processPair(pair: any, poolCreatedAt?: number, deployer?: string)
   const result = routePair(pair, security);
   console.log(`📊 Score: ${result.score.total}/100 → ${result.strategy.toUpperCase()}`);
 
-  // Outlier V2 check
+  // Outlier V2
   let outlierV2Result: OutlierV2Result | null = null;
   if (FEATURE_FLAGS.useOutlierV2 && result.strategy !== "skip") {
     outlierV2Result = await runOutlierV2(pair, recentPairsCache, supabase);
@@ -70,6 +71,7 @@ async function processPair(pair: any, poolCreatedAt?: number, deployer?: string)
     }
   }
 
+  // Cache for narrative detection
   recentPairsCache.push(pair);
   if (recentPairsCache.length > MAX_RECENT_CACHE) recentPairsCache.shift();
 
@@ -121,7 +123,6 @@ async function processPair(pair: any, poolCreatedAt?: number, deployer?: string)
 }
 
 // ─── DexScreener scan cycle ───────────────────────────────────────────────────
-// Slowed to 60s to avoid DexScreener 429 rate limiting
 
 async function dexScreenerScanCycle(): Promise<void> {
   console.log(`\n🔄 DexScreener scan: ${new Date().toLocaleTimeString()}`);
@@ -146,38 +147,54 @@ export async function startBot(): Promise<void> {
   console.log(`🤖 CATALYST APEX TRADER started`);
   console.log(`⚙️  Mode: ${MODE.toUpperCase()} | Auto-trade: ${AUTO_TRADE ? "ON" : "OFF"}`);
   console.log(`⚙️  Helius webhooks: ${FEATURE_FLAGS.useHeliusWebhooks ? "ON" : "OFF"}`);
-  console.log(`⚙️  Pump.fun monitor: OFF (disabled — use Helius webhooks instead)`);
   console.log(`⚙️  Outlier V2: ${FEATURE_FLAGS.useOutlierV2 ? "ON" : "OFF"}`);
 
-  // ── Helius webhook mode ──────────────────────────────────────────────────
   if (FEATURE_FLAGS.useHeliusWebhooks) {
+    // ── HELIUS MODE ───────────────────────────────────────────────────────────
+    // Webhook server receives real-time pair events from Helius
+    // DexScreener runs every 60s as supplement to fill any gaps
+
     const app = createWebhookServer(async (webhookPair) => {
+      console.log(`\n⚡ Helius webhook fired: ${webhookPair.tokenAddress}`);
+      console.log(`   Deployer: ${webhookPair.deployer}`);
+      console.log(`   Initial SOL: ${webhookPair.initialSol.toFixed(2)}`);
+
+      // Wait 3s then enrich with DexScreener market data
       const pair = await enrichPairFromDexScreener(webhookPair.tokenAddress);
-      if (!pair) return;
+      if (!pair) {
+        console.log(`⚠️  Could not enrich ${webhookPair.tokenAddress} — token not indexed yet`);
+        return;
+      }
+
+      // Inject Helius data into pair object
       pair.deployer      = webhookPair.deployer;
       pair.pairCreatedAt = webhookPair.poolCreatedAt * 1000;
+
       await processPair(pair, webhookPair.poolCreatedAt, webhookPair.deployer);
     });
 
+    // Start webhook server
     app.listen(SERVER.webhookPort, () => {
       console.log(`🌐 Webhook server listening on port ${SERVER.webhookPort}`);
     });
 
+    // Register with Helius API — tells Helius where to send events
     await registerHeliusWebhook();
 
-    // DexScreener as supplement — every 60s
+    // DexScreener as supplement — catches anything Helius misses
     console.log(`🔄 DexScreener supplement: every 60s`);
+    await dexScreenerScanCycle();
     setInterval(dexScreenerScanCycle, 60_000);
 
   } else {
-    // ── DexScreener polling mode (default) ──────────────────────────────────
-    // 60s interval to avoid 429 rate limiting
+    // ── DEXSCREENER MODE (default) ────────────────────────────────────────────
+    // Polls every 60s — no webhook server started
     console.log(`🔄 DexScreener polling: every 60s`);
     await dexScreenerScanCycle();
     setInterval(dexScreenerScanCycle, 60_000);
   }
 
-  // Position monitor runs every 30s regardless of mode
+  // Position monitor always runs every 30s
   setInterval(async () => {
     try { await monitorPositions(); }
     catch (err: any) { console.error("❌ Position monitor error:", err.message); }
