@@ -5,7 +5,7 @@ import { fetchNewSolanaPairs }    from "../scanner/dexscreener";
 import { runSecurityCheck }       from "../security";
 import { routePair }              from "../scoring/router";
 import { analyzeWithHaiku }       from "../scoring/haiku";
-import { runOutlierV2, OutlierV2Result }           from "../scoring/outlier-v2";
+import { runOutlierV2, OutlierV2Result } from "../scoring/outlier-v2";
 import { sendSignalAlert }        from "./alerts";
 import { openPosition, monitorPositions } from "../execution/positions";
 import { supabase }               from "../../db/supabase";
@@ -43,7 +43,6 @@ export function setAutoTrade(value: boolean): void {
 }
 
 // ─── Core pipeline ────────────────────────────────────────────────────────────
-// Runs for every new pair regardless of source (Helius or DexScreener)
 
 async function processPair(pair: any, poolCreatedAt?: number, deployer?: string): Promise<void> {
   const address = pair.baseToken?.address ?? pair.tokenAddress;
@@ -62,7 +61,6 @@ async function processPair(pair: any, poolCreatedAt?: number, deployer?: string)
   const result = routePair(pair, security);
   console.log(`📊 Score: ${result.score.total}/100 → ${result.strategy.toUpperCase()}`);
 
-  // Outlier V2
   let outlierV2Result: OutlierV2Result | null = null;
   if (FEATURE_FLAGS.useOutlierV2 && result.strategy !== "skip") {
     outlierV2Result = await runOutlierV2(pair, recentPairsCache, supabase);
@@ -71,7 +69,6 @@ async function processPair(pair: any, poolCreatedAt?: number, deployer?: string)
     }
   }
 
-  // Cache for narrative detection
   recentPairsCache.push(pair);
   if (recentPairsCache.length > MAX_RECENT_CACHE) recentPairsCache.shift();
 
@@ -151,80 +148,45 @@ export async function startBot(): Promise<void> {
 
   if (FEATURE_FLAGS.useHeliusWebhooks) {
     // ── HELIUS MODE ───────────────────────────────────────────────────────────
-    // Webhook server receives real-time pair events from Helius
-    // DexScreener runs every 60s as supplement to fill any gaps
 
     const app = createWebhookServer(async (webhookPair) => {
       console.log(`\n⚡ Helius webhook fired: ${webhookPair.tokenAddress}`);
       console.log(`   Deployer: ${webhookPair.deployer}`);
       console.log(`   Initial SOL: ${webhookPair.initialSol.toFixed(2)}`);
 
-      // Wait 3s then enrich with DexScreener market data
       const pair = await enrichPairFromDexScreener(webhookPair.tokenAddress);
       if (!pair) {
-        console.log(`⚠️  Could not enrich ${webhookPair.tokenAddress} — token not indexed yet`);
+        console.log(`⚠️  Could not enrich ${webhookPair.tokenAddress} — not indexed yet`);
         return;
       }
 
-      // Inject Helius data into pair object
       pair.deployer      = webhookPair.deployer;
       pair.pairCreatedAt = webhookPair.poolCreatedAt * 1000;
 
       await processPair(pair, webhookPair.poolCreatedAt, webhookPair.deployer);
     });
 
-    // Start webhook server with exponential backoff retry
-    const MAX_RETRIES = 12;
-    let retryCount = 0;
+    // Simple listen — no retry logic, Railway handles port routing
+    app.listen(SERVER.webhookPort, () => {
+      console.log(`🌐 Webhook server listening on port ${SERVER.webhookPort}`);
+    });
 
-    const startServer = (): Promise<void> => {
-      return new Promise((resolve, reject) => {
-        const server = app.listen(SERVER.webhookPort, () => {
-          console.log(`🌐 Webhook server listening on port ${SERVER.webhookPort}`);
-          retryCount = 0;
-          resolve();
-        });
-
-        server.on("error", (err: any) => {
-          if (err.code === "EADDRINUSE" && retryCount < MAX_RETRIES) {
-            retryCount++;
-            const delayMs = Math.min(2000 + retryCount * 1000, 20000); // 2-20s backoff
-            console.error(`❌ Port ${SERVER.webhookPort} in use (attempt ${retryCount}/${MAX_RETRIES}). Waiting ${delayMs}ms...`);
-            server.close();
-            setTimeout(() => {
-              startServer().then(resolve).catch(reject);
-            }, delayMs);
-          } else {
-            reject(err);
-          }
-        });
-      });
-    };
-
-    try {
-      await startServer();
-    } catch (err) {
-      console.error("❌ Failed to start webhook server after all retries:", err);
-      throw err;
-    }
-
-    // Register with Helius API — tells Helius where to send events
+    // Register webhook with Helius
     await registerHeliusWebhook();
 
-    // DexScreener as supplement — catches anything Helius misses
+    // DexScreener as supplement
     console.log(`🔄 DexScreener supplement: every 60s`);
     await dexScreenerScanCycle();
     setInterval(dexScreenerScanCycle, 60_000);
 
   } else {
-    // ── DEXSCREENER MODE (default) ────────────────────────────────────────────
-    // Polls every 60s — no webhook server started
+    // ── DEXSCREENER MODE ──────────────────────────────────────────────────────
     console.log(`🔄 DexScreener polling: every 60s`);
     await dexScreenerScanCycle();
     setInterval(dexScreenerScanCycle, 60_000);
   }
 
-  // Position monitor always runs every 30s
+  // Position monitor always runs
   setInterval(async () => {
     try { await monitorPositions(); }
     catch (err: any) { console.error("❌ Position monitor error:", err.message); }
