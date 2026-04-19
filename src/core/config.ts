@@ -29,8 +29,7 @@ function loadSolanaKeypair(): Keypair {
 
 // ─── Mode ─────────────────────────────────────────────────────────────────────
 export type TradeMode = "testing" | "live";
-const requestedMode = (process.env.TRADE_MODE ?? "testing").toLowerCase();
-export const MODE: TradeMode = requestedMode === "live" || requestedMode === "production" ? "live" : "testing";
+export const MODE = (process.env.TRADE_MODE ?? "testing") as TradeMode;
 export const TRADE_AMOUNT_USD = MODE === "live" ? 5 : 3;
 
 // ─── Solana ───────────────────────────────────────────────────────────────────
@@ -91,13 +90,13 @@ export const STRATEGY = {
     minSolLamports:      10_000,
   },
   security: {
-    // Tightened from 5% to 3.5% based on expert guide recommendation
+    // Tightened from 5% to 3.5% per expert guide
     maxTopHolderPercent: 3.5,
   },
   scanner: {
-    // Vol must be at least 5% of MCap — below this = likely bundled
-    minVolMcapRatio: 0.05,
-    // Max trades per day — concentrated conviction wins over spreading thin
+    // Vol must be at least 80% of MCap — below = likely bundled
+    minVolMcapRatio: 0.8,
+    // Max trades per day — concentrated conviction wins
     maxDailyTrades:  10,
   },
 };
@@ -110,9 +109,12 @@ export const HELIUS = {
 };
 
 // ─── Server ───────────────────────────────────────────────────────────────────
+// Railway automatically assigns a PORT env variable.
+// We always use it when available — it is guaranteed to be free.
+// Fallback to WEBHOOK_PORT for local dev, then 3001.
 export const SERVER = {
-  publicUrl:   process.env.PUBLIC_URL    ?? "",
-  webhookPort: parseInt(process.env.WEBHOOK_PORT ?? "8080"),
+  publicUrl:   process.env.PUBLIC_URL ?? "",
+  webhookPort: parseInt(process.env.PORT ?? process.env.WEBHOOK_PORT ?? "3001"),
 };
 
 // ─── Feature Flags ────────────────────────────────────────────────────────────
@@ -137,6 +139,7 @@ export function printConfig(): void {
 ║ Deployer Chk : ${(FEATURE_FLAGS.enableDeployerCheck   ? "ON" : "OFF").padEnd(22)}║
 ║ Max Holder % : ${String(STRATEGY.security.maxTopHolderPercent + "%").padEnd(22)}║
 ║ Daily Trade  : ${String("max " + STRATEGY.scanner.maxDailyTrades).padEnd(22)}║
+║ Webhook Port : ${String(SERVER.webhookPort).padEnd(22)}║
 ╚══════════════════════════════════════╝
   `);
 }
