@@ -2,14 +2,17 @@
 
 import { RawPair }           from "../scanner/dexscreener";
 import { FullSecurityResult } from "../security";
+import { analyzeChartShape, ChartAnalysis } from "./chart-reader";
 
 export interface ScoreBreakdown {
-  total:     number;
-  safety:    number;
-  liquidity: number;
-  momentum:  number;
-  age:       number;
-  narrative: number;
+  total:         number;
+  safety:        number;
+  liquidity:     number;
+  momentum:      number;
+  age:           number;
+  narrative:     number;
+  chart:         number;
+  chartAnalysis: ChartAnalysis;
   details: {
     liquidityUsd:   number;
     volumeM5:       number;
@@ -25,63 +28,33 @@ export interface ScoreBreakdown {
   };
 }
 
-// ─── Narrative detection — exact word matching only ───────────────────────────
-// Uses word boundaries so "cat" doesn't match "catalyst" or "hoeification"
-// and "ai" doesn't match "main" or "rain"
+// ─── Narrative detection ───────────────────────────────────────────────────────
 
 function detectNarrative(name: string, symbol: string): string {
   const text = `${name} ${symbol}`.toLowerCase();
-
-  // Political
-  if (/\b(trump|maga|biden|harris|potus|president|america|usa|political)\b/.test(text)) return "political";
-
-  // Elon / Tesla
-  if (/\b(elon|musk|tesla|spacex|grok|x\.com)\b/.test(text)) return "elon";
-
-  // Dog coins
-  if (/\b(doge|shib|inu|dog|woof|puppy|doggo|dogwif)\b/.test(text)) return "dog";
-
-  // Cat coins
-  if (/\b(cat|kitty|meow|neko|kitten|tabby)\b/.test(text)) return "cat";
-
-  // Pepe / frog
-  if (/\b(pepe|frog|rare|wojak|apu)\b/.test(text)) return "pepe";
-
-  // AI — exact word only, not inside other words
-  if (/\b(ai|gpt|llm|neural|robot|agent|artificial)\b/.test(text)) return "AI";
-
-  // Space
-  if (/\b(moon|mars|space|galaxy|rocket|nasa|alien|ufo)\b/.test(text)) return "space";
-
-  // Gaming
-  if (/\b(game|play|quest|hero|gamer|rpg|nft)\b/.test(text)) return "gaming";
-
-  // Community / based
-  if (/\b(based|chad|giga|sigma|alpha|ape|degen)\b/.test(text)) return "community";
-
+  if (/\b(trump|maga|biden|harris|potus|president|america|usa)\b/.test(text)) return "political";
+  if (/\b(elon|musk|tesla|spacex|grok)\b/.test(text))                         return "elon";
+  if (/\b(doge|shib|inu|dog|woof|puppy|doggo)\b/.test(text))                  return "dog";
+  if (/\b(cat|kitty|meow|neko|kitten)\b/.test(text))                          return "cat";
+  if (/\b(pepe|frog|rare|wojak|apu)\b/.test(text))                            return "pepe";
+  if (/\b(ai|gpt|llm|neural|robot|agent)\b/.test(text))                       return "AI";
+  if (/\b(moon|mars|space|galaxy|rocket)\b/.test(text))                       return "space";
+  if (/\b(based|chad|giga|sigma|ape|degen)\b/.test(text))                     return "community";
+  if (/\b(rave|crime|asteroid|disaster|news|viral|breaking)\b/.test(text))    return "event";
   return "meme";
 }
 
-// ─── Name quality check ───────────────────────────────────────────────────────
-// Returns a penalty score (0 = fine, negative = bad quality signal)
+// ─── Name quality penalty ─────────────────────────────────────────────────────
 
 function nameQualityPenalty(name: string, symbol: string): number {
   const text = `${name} ${symbol}`.toLowerCase();
   let penalty = 0;
-
-  // Generic/lazy names
-  const genericWords = ["token", "coin", "finance", "protocol", "swap", "inu2", "safe2", "erc20"];
+  const genericWords = ["token", "coin", "finance", "protocol", "swap", "inu2", "safe2"];
   if (genericWords.some((w) => text.includes(w))) penalty -= 8;
-
-  // Random letter combinations (symbol has no vowels and is >4 chars = likely random)
   const vowels = /[aeiou]/i;
   if (symbol.length > 4 && !vowels.test(symbol)) penalty -= 5;
-
-  // Name is just one word and very generic
   const genericSingleWords = ["fat", "him", "her", "big", "old", "new", "hot", "cool", "good", "bad"];
-  const nameLower = name.toLowerCase().trim();
-  if (genericSingleWords.includes(nameLower)) penalty -= 10;
-
+  if (genericSingleWords.includes(name.toLowerCase().trim())) penalty -= 10;
   return penalty;
 }
 
@@ -105,6 +78,10 @@ export function scorePair(pair: RawPair, security: FullSecurityResult): ScoreBre
   const buySellRatio  = sellCount > 0 ? buyCount / sellCount : buyCount;
   const fakeVolumeFlag = volLiqRatio > 50 || (volumeH24 > 100_000 && liquidityUsd < 3000);
 
+  // ── Chart shape (runs first) ───────────────────────────────────────────────
+  const chartAnalysis = analyzeChartShape(pair);
+  const chart         = chartAnalysis.score;
+
   // ── Safety (30pts) ─────────────────────────────────────────────────────────
   if (security.mintAuthority   === null) safety += 15;
   if (security.freezeAuthority === null) safety += 10;
@@ -116,27 +93,26 @@ export function scorePair(pair: RawPair, security: FullSecurityResult): ScoreBre
   else if (liquidityUsd >= 10_000) liquidity += 12;
   else if (liquidityUsd >= 8_000)  liquidity += 8;
 
-  // ── Momentum (25pts) ───────────────────────────────────────────────────────
-  if      (volLiqRatio >= 2.0) momentum += 12;
-  else if (volLiqRatio >= 1.5) momentum += 10;
-  else if (volLiqRatio >= 1.0) momentum += 7;
-  else if (volLiqRatio >= 0.5) momentum += 4;
+  // ── Momentum (20pts) ───────────────────────────────────────────────────────
+  if      (volLiqRatio >= 2.0) momentum += 10;
+  else if (volLiqRatio >= 1.5) momentum += 8;
+  else if (volLiqRatio >= 1.0) momentum += 5;
+  else if (volLiqRatio >= 0.5) momentum += 3;
 
-  if      (buySellRatio >= 3)   momentum += 8;
-  else if (buySellRatio >= 2)   momentum += 6;
-  else if (buySellRatio >= 1.5) momentum += 4;
-  else if (buySellRatio >= 1)   momentum += 2;
+  if      (buySellRatio >= 3)   momentum += 6;
+  else if (buySellRatio >= 2)   momentum += 4;
+  else if (buySellRatio >= 1.5) momentum += 3;
+  else if (buySellRatio >= 1)   momentum += 1;
 
-  if      (priceChangeM5 >= 10) momentum += 5;
-  else if (priceChangeM5 >= 0)  momentum += 3;
+  if      (priceChangeM5 >= 10) momentum += 4;
+  else if (priceChangeM5 >= 0)  momentum += 2;
   else if (priceChangeM5 >= -5) momentum += 1;
   else                          momentum -= 5;
 
   if (fakeVolumeFlag) momentum -= 10;
 
-  // Vol/MCap bonus — high ratio = real organic buying
-  if      (volMcapRatio >= 2.0) momentum += 5;
-  else if (volMcapRatio >= 1.0) momentum += 3;
+  if      (volMcapRatio >= 2.0) momentum += 3;
+  else if (volMcapRatio >= 1.0) momentum += 1;
 
   // ── Age (15pts) ────────────────────────────────────────────────────────────
   if      (ageMinutes <= 10)  age += 15;
@@ -145,28 +121,28 @@ export function scorePair(pair: RawPair, security: FullSecurityResult): ScoreBre
   else if (ageMinutes <= 120) age += 4;
 
   // ── Narrative (15pts) ──────────────────────────────────────────────────────
-  const detectedNarrative = detectNarrative(pair.baseToken.name, pair.baseToken.symbol);
-
-  // High value narratives
-  const highValueNarratives = ["political", "elon", "dog", "cat", "pepe", "AI"];
-  const midValueNarratives  = ["space", "gaming", "community"];
+  const detectedNarrative   = detectNarrative(pair.baseToken.name, pair.baseToken.symbol);
+  const highValueNarratives = ["political", "elon", "dog", "cat", "pepe", "AI", "event"];
+  const midValueNarratives  = ["space", "community"];
 
   if      (highValueNarratives.includes(detectedNarrative)) narrative += 12;
   else if (midValueNarratives.includes(detectedNarrative))  narrative += 7;
-  else                                                       narrative += 3; // generic meme
+  else                                                       narrative += 3;
 
-  // Short ticker bonus
   if      (pair.baseToken.symbol.length <= 4) narrative += 3;
   else if (pair.baseToken.symbol.length <= 6) narrative += 1;
 
-  // Name quality penalty
   narrative += nameQualityPenalty(pair.baseToken.name, pair.baseToken.symbol);
   narrative  = Math.min(15, Math.max(-10, narrative));
 
-  const total = Math.max(0, Math.min(100, safety + liquidity + momentum + age + narrative));
+  // ── Total ─────────────────────────────────────────────────────────────────
+  const total = Math.max(0, Math.min(100, safety + liquidity + momentum + age + narrative + chart));
+
+  console.log(`   📊 Chart: ${chartAnalysis.shape} (${chart >= 0 ? "+" : ""}${chart}pts) — ${chartAnalysis.entryQuality}`);
 
   return {
-    total, safety, liquidity, momentum, age, narrative,
+    total, safety, liquidity, momentum, age, narrative, chart,
+    chartAnalysis,
     details: {
       liquidityUsd, volumeM5, volLiqRatio, ageMinutes,
       priceUsd, priceChangeM5, buyCount, sellCount,

@@ -6,6 +6,7 @@ import { RawPair }        from "../scanner/dexscreener";
 import { HaikuResult }    from "../scoring/haiku";
 import { ScoreBreakdown } from "../scoring/confidence";
 import { OutlierV2Result } from "../scoring/outlier-v2";
+import { shapeEmoji }     from "../scoring/chart-reader";
 
 function formatMcap(mcap: number): string {
   if (mcap >= 1_000_000) return `$${(mcap / 1_000_000).toFixed(2)}M`;
@@ -14,11 +15,11 @@ function formatMcap(mcap: number): string {
 }
 
 export async function sendSignalAlert(
-  pair:         RawPair,
-  score:        ScoreBreakdown,
-  ai:           HaikuResult,
-  strategy:     string,
-  outlierV2?:   OutlierV2Result | null,
+  pair:        RawPair,
+  score:       ScoreBreakdown,
+  ai:          HaikuResult,
+  strategy:    string,
+  outlierV2?:  OutlierV2Result | null,
 ): Promise<void> {
   try {
     const signalEmoji   = ai.signal === "BUY" ? "🟢" : ai.signal === "WAIT" ? "🟡" : "🔴";
@@ -32,7 +33,11 @@ export async function sendSignalAlert(
       ? `${((score.details.volMcapRatio ?? 0) * 100).toFixed(0)}%`
       : "n/a";
 
-    // Outlier V2 section — only shown if a signal was detected
+    // Chart shape section
+    const chart      = score.chartAnalysis;
+    const chartLine  = `${shapeEmoji(chart.shape)} Chart: ${chart.shape} — ${chart.entryQuality} entry | ${chart.momentum}`;
+
+    // Outlier V2 section
     const outlierSection = outlierV2 && outlierV2.signal !== "NONE"
       ? `\n💡 *Outlier V2:* ${outlierV2.signal} (${outlierV2.confidence}% confidence)\n🎯 Expected: ${outlierV2.expectedReturn}x | ${outlierV2.reason}`
       : "";
@@ -45,8 +50,9 @@ ${signalEmoji} *CATALYST APEX TRADER* ${strategyEmoji} ${strategy.toUpperCase()}
 📊 Score: ${score.total}/100
 🎯 Signal: *${ai.signal}*
 
-💎 MCap: ${mcapNow}
+${chartLine}
 📦 Vol/MCap: ${volMcapPct}
+💎 MCap: ${mcapNow}
 🏷️ Brand: ${ai.brandScore}/100
 ☠️ Rug Risk: ${ai.rugRisk}%
 ${outlierSection}
@@ -55,6 +61,7 @@ ${outlierSection}
 🛑 Stop MCap:   ${mcapStop}
 
 📝 ${ai.reason}
+📝 ${chart.reason}
 
 📍 \`${pair.baseToken.address}\`
 🔗 [DexScreener](https://dexscreener.com/solana/${pair.baseToken.address})
@@ -70,7 +77,7 @@ ${outlierSection}
       }
     );
 
-    console.log(`📨 Alert sent: ${pair.baseToken.symbol} — ${ai.signal}`);
+    console.log(`📨 Alert sent: ${pair.baseToken.symbol} — ${ai.signal} | Chart: ${chart.shape}`);
 
   } catch (err: any) {
     console.error("❌ Telegram alert error:", err.message);
