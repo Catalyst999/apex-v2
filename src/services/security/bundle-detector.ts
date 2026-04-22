@@ -85,7 +85,7 @@ function detectSameBlock(buyers: Buyer[]): { found: boolean; detail: string; con
   }
 
   for (const [, group] of timeGroups) {
-    if (group.length >= 3) {
+    if (group.length >= 6) {
       return {
         found:      true,
         detail:     `${group.length} wallets bought in same 2-second block`,

@@ -1,9 +1,19 @@
 // src/services/scanner/dexscreener.ts
+// Catalyst Apex Trader v2.1 — All-Round Scanner
+//
+// Scans ALL Solana tokens regardless of age.
+// Three data sources run in parallel:
+// 1. New pairs    — fresh launches (token profiles endpoint)
+// 2. Trending     — established coins with current momentum
+// 3. Gainers      — tokens breaking out right now
+//
+// Chart shape is the entry gate — not age.
 
 import axios from "axios";
 import { STRATEGY } from "../../core/config";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
 export interface RawPair {
   chainId:     string;
   pairAddress: string;
@@ -19,16 +29,21 @@ export interface RawPair {
   fdv:       number;
   marketCap: number;
   priceChange: {
-    m5: number;
-    h1: number;
+    m5:  number;
+    h1:  number;
+    h6:  number;
+    h24: number;
   };
   txns: {
     m5: { buys: number; sells: number; };
     h1: { buys: number; sells: number; };
+    h6: { buys: number; sells: number; };
+    h24:{ buys: number; sells: number; };
   };
   volume: {
     m5:  number;
     h1:  number;
+    h6:  number;
     h24: number;
   };
   liquidity: {
@@ -38,97 +53,74 @@ export interface RawPair {
   deployer?:     string;
 }
 
-// ─── Known large cap addresses to hard-reject ─────────────────────────────────
-// These are real established coins that sometimes appear as "new pairs"
-// when someone creates a new pool for them. We never want to trade these.
+// ─── Known large caps to hard-reject ─────────────────────────────────────────
+
 const LARGE_CAP_SYMBOLS = new Set([
   "DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI",
-  "SOL",  "BTC",  "ETH",  "BNB",  "USDC", "USDT",
+  "SOL",  "BTC",  "ETH",  "BNB", "USDC", "USDT",
   "JUP",  "RAY",  "ORCA", "SAMO", "MEME",
 ]);
 
-// ─── Suspicious name patterns ─────────────────────────────────────────────────
-// Names that are almost always low-quality cash grabs
+// ─── Trash name patterns ──────────────────────────────────────────────────────
+
 const TRASH_PATTERNS = [
-  /fart/i, /ass(?:teroid|hole|wipe)/i, /shit/i, /cum(?:\s|$)/i,
-  /rug/i,  /scam/i, /ponzi/i,
+  /\bfart\b/i, /\bass(teroid|hole|wipe)\b/i, /\bshit\b/i,
+  /\bcum\b/i,  /\brug\b/i, /\bscam\b/i, /\bponzi\b/i,
 ];
 
-// ─── Filter ───────────────────────────────────────────────────────────────────
-function filterPairs(pairs: RawPair[], maxAgeMinutes = 120): RawPair[] {
-  const now = Date.now();
+// ─── Universal filter ─────────────────────────────────────────────────────────
+// Applied to ALL tokens regardless of source.
+// NO age filter — chart shape determines entry, not age.
 
+function filterPairs(pairs: RawPair[]): RawPair[] {
   return pairs.filter((p) => {
-    if (!p.liquidity?.usd)  return false;
-    if (!p.volume?.m5)      return false;
-    if (!p.pairCreatedAt)   return false;
-
-    const ageMinutes = (now - p.pairCreatedAt) / 1000 / 60;
-    if (ageMinutes > maxAgeMinutes) return false;
+    // Must have core data
+    if (!p.liquidity?.usd) return false;
+    if (!p.baseToken?.address) return false;
 
     // Hard reject known large caps
-    if (LARGE_CAP_SYMBOLS.has(p.baseToken.symbol?.toUpperCase())) {
-      console.log(`⛔ Large cap rejected: ${p.baseToken.symbol}`);
-      return false;
-    }
+    if (LARGE_CAP_SYMBOLS.has(p.baseToken.symbol?.toUpperCase())) return false;
 
-    // Hard reject MCap above $500k — we only trade small caps
+    // Hard reject MCap above $10M — we want coins with room to run
     const mcap = p.marketCap ?? p.fdv ?? 0;
-    if (mcap > 500_000) {
-      console.log(`⛔ MCap too high ($${(mcap/1000).toFixed(0)}k): ${p.baseToken.symbol}`);
+    if (mcap > 10_000_000) {
       return false;
     }
 
-    // Hard reject trash name patterns
+    // Minimum MCap $15k — below this the deployer controls everything
+    if (mcap > 0 && mcap < 15_000) {
+      return false;
+    }
+
+    // Hard reject trash names
     const fullName = `${p.baseToken.name} ${p.baseToken.symbol}`;
-    if (TRASH_PATTERNS.some((pat) => pat.test(fullName))) {
-      console.log(`⛔ Trash name rejected: ${p.baseToken.name}`);
-      return false;
-    }
+    if (TRASH_PATTERNS.some((pat) => pat.test(fullName))) return false;
 
-    // Minimum liquidity
-    if (p.liquidity.usd < 8000) return false;
+    // Minimum liquidity $8k
+    if (p.liquidity.usd < 8_000) return false;
 
-    // Must have positive 5-min volume
-    if (p.volume.m5 <= 0) return false;
-
-    // Drop hard dumpers
-    if ((p.priceChange?.m5 ?? 0) < -10) return false;
-
-    // Drop heavy sell pressure
-    const buys  = p.txns?.m5?.buys  ?? 0;
-    const sells = p.txns?.m5?.sells ?? 0;
-    if (sells > buys * 2) return false;
-
-    // Minimum buyer activity — at least 10 buys in last 5 min
-    if (buys < 10) {
-      console.log(`⛔ Not enough buyers (${buys}): ${p.baseToken.symbol}`);
-      return false;
-    }
-
-    // Drop fake volume
-    const volLiqRatio = p.volume.m5 / p.liquidity.usd;
-    if (volLiqRatio > 50) return false;
-
-    // Vol/MCap ratio check
-    if (mcap > 0) {
-      const volMcapRatio = p.volume.m5 / mcap;
-      if (volMcapRatio < STRATEGY.scanner.minVolMcapRatio) {
-        console.log(`⛔ Vol/MCap too low (${(volMcapRatio * 100).toFixed(0)}%): ${p.baseToken.symbol}`);
-        return false;
-      }
-    }
+    // Must have some volume activity
+    const hasActivity = (p.volume?.m5 ?? 0) > 0 ||
+                        (p.volume?.h1 ?? 0) > 0 ||
+                        (p.volume?.h24 ?? 0) > 0;
+    if (!hasActivity) return false;
 
     // Drop stablecoin pairs
     const quote = p.quoteToken?.symbol?.toUpperCase() ?? "";
     if (["USDC", "USDT", "BUSD", "DAI"].includes(quote)) return false;
 
+    // Drop dead tokens — no volume in 24h and price dropping
+    const vol24 = p.volume?.h24 ?? 0;
+    const priceH24 = p.priceChange?.h24 ?? 0;
+    if (vol24 === 0 && priceH24 < -50) return false;
+
     return true;
   });
 }
 
-// ─── Solana scanner ───────────────────────────────────────────────────────────
-export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
+// ─── New pairs (fresh launches) ───────────────────────────────────────────────
+
+async function fetchNewPairs(): Promise<RawPair[]> {
   try {
     const res = await axios.get(
       "https://api.dexscreener.com/token-profiles/latest/v1",
@@ -142,8 +134,48 @@ export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
 
     if (solanaProfiles.length === 0) return [];
 
-    const solanaAddresses = solanaProfiles.map((p: any) => p.tokenAddress as string);
-    console.log(`📡 Fetching pairs for ${solanaAddresses.length} tokens...`);
+    const addresses = solanaProfiles.map((p: any) => p.tokenAddress as string);
+    const allPairs:  RawPair[] = [];
+
+    for (let i = 0; i < addresses.length; i += 10) {
+      const batch = addresses.slice(i, i + 10).join(",");
+      try {
+        const pairRes = await axios.get(
+          `https://api.dexscreener.com/tokens/v1/solana/${batch}`,
+          { timeout: 10000 }
+        );
+        allPairs.push(...(pairRes.data ?? []));
+      } catch {}
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    return allPairs.map((pair: any) => ({
+      ...pair,
+      deployer: pair.deployer ?? pair.info?.deployer ?? undefined,
+    }));
+
+  } catch (err: any) {
+    console.error("❌ New pairs fetch error:", err.message);
+    return [];
+  }
+}
+
+// ─── Trending tokens (established coins with momentum) ────────────────────────
+
+async function fetchTrendingPairs(): Promise<RawPair[]> {
+  try {
+    const res = await axios.get(
+      "https://api.dexscreener.com/token-boosts/top/v1",
+      { timeout: 10000 }
+    );
+
+    const allBoosts: any[] = res.data ?? [];
+    const solanaAddresses  = allBoosts
+      .filter((p: any) => p.chainId === "solana")
+      .map((p: any) => p.tokenAddress as string)
+      .slice(0, 20);
+
+    if (solanaAddresses.length === 0) return [];
 
     const allPairs: RawPair[] = [];
 
@@ -154,30 +186,79 @@ export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
           `https://api.dexscreener.com/tokens/v1/solana/${batch}`,
           { timeout: 10000 }
         );
-        const pairs: any[] = pairRes.data ?? [];
-        allPairs.push(...pairs);
-      } catch (batchErr: any) {
-        console.warn(`⚠️  Batch fetch failed: ${batchErr.message}`);
-      }
+        allPairs.push(...(pairRes.data ?? []));
+      } catch {}
       await new Promise((r) => setTimeout(r, 300));
     }
 
-    console.log(`📊 Total pairs fetched: ${allPairs.length}`);
-
-    const enriched: RawPair[] = allPairs.map((pair: any) => ({
-      ...pair,
-      deployer: pair.deployer ?? pair.info?.deployer ?? undefined,
-    }));
-
-    return filterPairs(enriched);
+    return allPairs;
 
   } catch (err: any) {
-    console.error("❌ DexScreener SOL error:", err.message);
+    console.error("❌ Trending pairs fetch error:", err.message);
     return [];
   }
 }
 
-// ─── BSC scanner ──────────────────────────────────────────────────────────────
+// ─── Gainers (breakouts in progress) ─────────────────────────────────────────
+
+async function fetchGainerPairs(): Promise<RawPair[]> {
+  try {
+    // DexScreener search for top Solana gainers by 1h price change
+    const res = await axios.get(
+      "https://api.dexscreener.com/latest/dex/search?q=solana",
+      { timeout: 10000 }
+    );
+
+    const pairs: any[] = res.data?.pairs ?? [];
+
+    // Filter to Solana only, sort by 1h gain, take top 20
+    return pairs
+      .filter((p: any) => p.chainId === "solana")
+      .sort((a: any, b: any) => (b.priceChange?.h1 ?? 0) - (a.priceChange?.h1 ?? 0))
+      .slice(0, 20);
+
+  } catch (err: any) {
+    console.error("❌ Gainers fetch error:", err.message);
+    return [];
+  }
+}
+
+// ─── Main export ──────────────────────────────────────────────────────────────
+// Runs all 3 sources in parallel, deduplicates, filters, returns.
+
+export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
+  console.log(`📡 Scanning: new pairs + trending + gainers...`);
+
+  // Run all 3 in parallel
+  const [newPairs, trendingPairs, gainerPairs] = await Promise.all([
+    fetchNewPairs(),
+    fetchTrendingPairs(),
+    fetchGainerPairs(),
+  ]);
+
+  console.log(`   📦 New: ${newPairs.length} | Trending: ${trendingPairs.length} | Gainers: ${gainerPairs.length}`);
+
+  // Merge and deduplicate by token address
+  const seen    = new Set<string>();
+  const merged: RawPair[] = [];
+
+  for (const pair of [...newPairs, ...trendingPairs, ...gainerPairs]) {
+    const addr = pair.baseToken?.address;
+    if (!addr || seen.has(addr)) continue;
+    seen.add(addr);
+    merged.push(pair);
+  }
+
+  console.log(`   🔀 Merged: ${merged.length} unique tokens`);
+
+  const filtered = filterPairs(merged);
+  console.log(`   ✅ After filter: ${filtered.length} tokens`);
+
+  return filtered;
+}
+
+// ─── BSC scanner (unchanged) ──────────────────────────────────────────────────
+
 export async function fetchNewBscPairs(): Promise<RawPair[]> {
   try {
     const profileRes = await axios.get(
@@ -185,8 +266,8 @@ export async function fetchNewBscPairs(): Promise<RawPair[]> {
       { timeout: 10000 }
     );
 
-    const profiles: any[] = profileRes.data ?? [];
-    const bscAddresses = profiles
+    const profiles: any[]  = profileRes.data ?? [];
+    const bscAddresses     = profiles
       .filter((p: any) => p.chainId === "bsc")
       .map((p: any) => p.tokenAddress as string)
       .slice(0, 30);
@@ -202,11 +283,8 @@ export async function fetchNewBscPairs(): Promise<RawPair[]> {
           `https://api.dexscreener.com/tokens/v1/bsc/${batch}`,
           { timeout: 10000 }
         );
-        const pairs: any[] = res.data ?? [];
-        allPairs.push(...pairs);
-      } catch (batchErr: any) {
-        console.warn(`⚠️  BSC batch failed: ${batchErr.message}`);
-      }
+        allPairs.push(...(res.data ?? []));
+      } catch {}
       await new Promise((r) => setTimeout(r, 300));
     }
 
@@ -219,6 +297,7 @@ export async function fetchNewBscPairs(): Promise<RawPair[]> {
 }
 
 // ─── Single token lookup ──────────────────────────────────────────────────────
+
 export async function fetchTokenData(
   address: string,
   chain:   "solana" | "bsc"

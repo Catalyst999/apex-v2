@@ -1,4 +1,5 @@
 // src/services/scoring/confidence.ts
+// v2.1 — Age bias removed. Chart shape is the primary entry signal.
 
 import { RawPair }           from "../scanner/dexscreener";
 import { FullSecurityResult } from "../security";
@@ -49,7 +50,7 @@ function detectNarrative(name: string, symbol: string): string {
 function nameQualityPenalty(name: string, symbol: string): number {
   const text = `${name} ${symbol}`.toLowerCase();
   let penalty = 0;
-  const genericWords = ["token", "coin", "finance", "protocol", "swap", "inu2", "safe2"];
+  const genericWords = ["token", "coin", "finance", "protocol", "swap"];
   if (genericWords.some((w) => text.includes(w))) penalty -= 8;
   const vowels = /[aeiou]/i;
   if (symbol.length > 4 && !vowels.test(symbol)) penalty -= 5;
@@ -64,7 +65,9 @@ export function scorePair(pair: RawPair, security: FullSecurityResult): ScoreBre
   let safety = 0, liquidity = 0, momentum = 0, age = 0, narrative = 0;
 
   const now           = Date.now();
-  const ageMinutes    = (now - pair.pairCreatedAt) / 1000 / 60;
+  const ageMinutes    = pair.pairCreatedAt
+    ? (now - pair.pairCreatedAt) / 1000 / 60
+    : 0;
   const liquidityUsd  = pair.liquidity?.usd    ?? 0;
   const volumeM5      = pair.volume?.m5        ?? 0;
   const volumeH24     = pair.volume?.h24       ?? 0;
@@ -78,7 +81,7 @@ export function scorePair(pair: RawPair, security: FullSecurityResult): ScoreBre
   const buySellRatio  = sellCount > 0 ? buyCount / sellCount : buyCount;
   const fakeVolumeFlag = volLiqRatio > 50 || (volumeH24 > 100_000 && liquidityUsd < 3000);
 
-  // ── Chart shape (runs first) ───────────────────────────────────────────────
+  // ── Chart shape (primary signal) ───────────────────────────────────────────
   const chartAnalysis = analyzeChartShape(pair);
   const chart         = chartAnalysis.score;
 
@@ -114,11 +117,19 @@ export function scorePair(pair: RawPair, security: FullSecurityResult): ScoreBre
   if      (volMcapRatio >= 2.0) momentum += 3;
   else if (volMcapRatio >= 1.0) momentum += 1;
 
-  // ── Age (15pts) ────────────────────────────────────────────────────────────
-  if      (ageMinutes <= 10)  age += 15;
-  else if (ageMinutes <= 30)  age += 12;
-  else if (ageMinutes <= 60)  age += 8;
-  else if (ageMinutes <= 120) age += 4;
+  // ── Age (10pts max — no longer the primary signal) ────────────────────────
+  // Age is a minor bonus now, not a gate. An old token in perfect
+  // accumulation is just as valid as a new one.
+  // New tokens get slight bonus for first-mover potential.
+  // Old tokens with sustained activity get bonus for proven survival.
+  if (ageMinutes > 0) {
+    if      (ageMinutes <= 30)                    age += 10; // very fresh
+    else if (ageMinutes <= 120)                   age += 7;  // new
+    else if (ageMinutes <= 1440)                  age += 5;  // < 1 day
+    else if (ageMinutes <= 10080)                 age += 8;  // 1-7 days (survived)
+    else if (ageMinutes <= 43200)                 age += 6;  // 1-30 days (established)
+    else                                          age += 4;  // 30+ days (veteran)
+  }
 
   // ── Narrative (15pts) ──────────────────────────────────────────────────────
   const detectedNarrative   = detectNarrative(pair.baseToken.name, pair.baseToken.symbol);
@@ -138,7 +149,7 @@ export function scorePair(pair: RawPair, security: FullSecurityResult): ScoreBre
   // ── Total ─────────────────────────────────────────────────────────────────
   const total = Math.max(0, Math.min(100, safety + liquidity + momentum + age + narrative + chart));
 
-  console.log(`   📊 Chart: ${chartAnalysis.shape} (${chart >= 0 ? "+" : ""}${chart}pts) — ${chartAnalysis.entryQuality}`);
+  console.log(`   📊 Chart: ${chartAnalysis.shape} (${chart >= 0 ? "+" : ""}${chart}pts) | Entry: ${chartAnalysis.entryQuality} | Age: ${ageMinutes < 60 ? ageMinutes.toFixed(0) + "m" : (ageMinutes / 60).toFixed(0) + "h"}`);
 
   return {
     total, safety, liquidity, momentum, age, narrative, chart,

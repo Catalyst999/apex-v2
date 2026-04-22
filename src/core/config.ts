@@ -71,6 +71,13 @@ export const TELEGRAM = {
   miniAppUrl: process.env.MINI_APP_URL ?? "",
 };
 
+// ─── X (Twitter) API ──────────────────────────────────────────────────────────
+export const X_API = {
+  bearerToken: process.env.X_BEARER_TOKEN ?? "",
+  apiKey:      process.env.X_API_KEY      ?? "",
+  apiSecret:   process.env.X_API_SECRET   ?? "",
+};
+
 // ─── Strategy ─────────────────────────────────────────────────────────────────
 export const STRATEGY = {
   outlier: {
@@ -90,13 +97,10 @@ export const STRATEGY = {
     minSolLamports:      10_000,
   },
   security: {
-    // Tightened from 5% to 3.5% per expert guide
     maxTopHolderPercent: 3.5,
   },
   scanner: {
-    // Vol must be at least 80% of MCap — below = likely bundled
     minVolMcapRatio: 0.8,
-    // Max trades per day — concentrated conviction wins
     maxDailyTrades:  10,
   },
 };
@@ -109,9 +113,6 @@ export const HELIUS = {
 };
 
 // ─── Server ───────────────────────────────────────────────────────────────────
-// Railway automatically assigns a PORT env variable.
-// We always use it when available — it is guaranteed to be free.
-// Fallback to WEBHOOK_PORT for local dev, then 3001.
 export const SERVER = {
   publicUrl:   process.env.PUBLIC_URL ?? "",
   webhookPort: parseInt(process.env.PORT ?? process.env.WEBHOOK_PORT ?? "3001"),
@@ -139,7 +140,7 @@ export function printConfig(): void {
 ║ Deployer Chk : ${(FEATURE_FLAGS.enableDeployerCheck   ? "ON" : "OFF").padEnd(22)}║
 ║ Max Holder % : ${String(STRATEGY.security.maxTopHolderPercent + "%").padEnd(22)}║
 ║ Daily Trade  : ${String("max " + STRATEGY.scanner.maxDailyTrades).padEnd(22)}║
-║ Webhook Port : ${String(SERVER.webhookPort).padEnd(22)}║
+║ X API        : ${(X_API.bearerToken ? "ON" : "OFF").padEnd(22)}║
 ╚══════════════════════════════════════╝
   `);
 }
