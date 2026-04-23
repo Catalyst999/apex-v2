@@ -1,19 +1,19 @@
 // src/services/execution/positions.ts
-// Catalyst Apex Trader v2.1 — Position Manager
+// v2.1 — Position Manager with Risk Engine integration
 //
-// Exit logic uses chart shape reading on every monitoring cycle:
-// - ACCUMULATION / BREAKOUT / STAIRCASE → hold
-// - DISTRIBUTION → reduce position (smart money leaving)
-// - FOMO → hold but tighten trailing stop
-// - DUMP → emergency exit immediately
-//
-// This replaces fixed time-based exits with dynamic chart-driven exits.
+// Exit logic:
+// 1. Chart shape → DUMP/DISTRIBUTION = emergency exit
+// 2. Ladder targets → sell in stages, not all at once
+// 3. Dead position → exit if no movement after 30 min
+// 4. Trailing stop → tightens in FOMO/DISTRIBUTION
+// 5. Record outcome → feeds risk engine consecutive loss tracker
 
-import { supabase }        from "../../db/supabase";
+import { supabase }           from "../../db/supabase";
 import { buyToken, sellToken } from "./jupiter";
 import { STRATEGY, TRADE_AMOUNT_USD } from "../../core/config";
-import { usdToSol }        from "./parity";
-import { analyzeChartShape } from "../scoring/chart-reader";
+import { usdToSol }           from "./parity";
+import { analyzeChartShape }  from "../scoring/chart-reader";
+import { recordTradeOutcome, getLadderTargets, isDeadPosition } from "./risk-engine";
 
 export interface Position {
   id:             string;
@@ -26,40 +26,46 @@ export interface Position {
   status:         string;
   moonbag_active: boolean;
   peak_price:     number;
+  opened_at:      string;
+  ladder_stage:   number;   // 0 = none, 1 = first target hit, 2 = second hit
 }
 
 // ─── Open position ────────────────────────────────────────────────────────────
 
 export async function openPosition(
-  pairId:     string,
-  tokenMint:  string,
-  chain:      string,
-  strategy:   string,
-  entryPrice: number,
+  pairId:       string,
+  tokenMint:    string,
+  chain:        string,
+  strategy:     string,
+  entryPrice:   number,
+  positionSize?: number,  // override from risk engine
 ): Promise<void> {
   try {
+    const tradeAmount = positionSize ?? TRADE_AMOUNT_USD;
+
     const trade = await buyToken(tokenMint);
     if (!trade.success) {
       console.error("❌ Buy failed:", trade.error);
       return;
     }
 
-    const solAmount = await usdToSol(TRADE_AMOUNT_USD);
+    const solAmount = await usdToSol(tradeAmount);
 
     const { error } = await supabase.from("trades").insert({
-      pair_id:       pairId,
+      pair_id:        pairId,
       chain,
       strategy,
-      entry_price:   entryPrice,
-      amount_usd:    TRADE_AMOUNT_USD,
-      amount_native: solAmount.toFixed(9),
-      status:        "open",
+      entry_price:    entryPrice,
+      amount_usd:     tradeAmount,
+      amount_native:  solAmount.toFixed(9),
+      status:         "open",
       moonbag_active: false,
-      peak_price:    entryPrice,
+      peak_price:     entryPrice,
+      ladder_stage:   0,
     });
 
     if (error) console.error("❌ DB insert error:", error.message);
-    else console.log(`✅ Position opened — $${TRADE_AMOUNT_USD} at $${entryPrice}`);
+    else console.log(`✅ Position opened — $${tradeAmount} at $${entryPrice}`);
 
   } catch (err: any) {
     console.error("❌ openPosition error:", err.message);
@@ -75,8 +81,7 @@ export async function monitorPositions(): Promise<void> {
       .select("*, pairs(address, chain)")
       .eq("status", "open");
 
-    if (error || !positions) return;
-    if (positions.length === 0) return;
+    if (error || !positions || positions.length === 0) return;
 
     console.log(`\n👁️  Monitoring ${positions.length} open position(s)...`);
 
@@ -84,7 +89,6 @@ export async function monitorPositions(): Promise<void> {
       const tokenAddress = pos.pairs?.address;
       if (!tokenAddress) continue;
 
-      // Get current price + full pair data for chart reading
       const pairData = await getCurrentPairData(tokenAddress);
       if (!pairData) continue;
 
@@ -92,98 +96,129 @@ export async function monitorPositions(): Promise<void> {
       if (!currentPrice) continue;
 
       const entryPrice  = pos.entry_price;
-      const peakPrice   = Math.max(pos.peak_price, currentPrice);
-      const pnlPercent  = ((currentPrice - entryPrice) / entryPrice) * 100;
-      const pnlUsd      = (currentPrice - entryPrice) / entryPrice * pos.amount_usd;
+      const peakPrice   = Math.max(pos.peak_price ?? entryPrice, currentPrice);
+      const pnlPct      = ((currentPrice - entryPrice) / entryPrice) * 100;
+      const pnlUsd      = (currentPrice - entryPrice) / entryPrice * (pos.amount_usd ?? 0);
 
-      console.log(`📊 ${tokenAddress.slice(0, 8)}... | Entry: $${entryPrice.toFixed(8)} | Now: $${currentPrice.toFixed(8)} | PnL: ${pnlPercent.toFixed(1)}% ($${pnlUsd.toFixed(2)})`);
+      console.log(`📊 ${tokenAddress.slice(0, 8)}... | PnL: ${pnlPct.toFixed(1)}% ($${pnlUsd.toFixed(2)}) | Peak: $${peakPrice.toFixed(8)}`);
 
-      // Update peak price
-      if (currentPrice > pos.peak_price) {
+      // Update peak
+      if (currentPrice > (pos.peak_price ?? 0)) {
         await supabase.from("trades").update({ peak_price: currentPrice }).eq("id", pos.id);
       }
 
-      // ── Chart shape analysis for exit decision ─────────────────────────────
+      // ── Chart shape exit signals ───────────────────────────────────────────
       const chart = analyzeChartShape(pairData);
       console.log(`   📊 Exit chart: ${chart.shape} | Exit signal: ${chart.exitSignal}`);
 
-      // EMERGENCY EXIT — chart says dump, get out regardless of strategy
+      // Emergency exit on DUMP
       if (chart.shape === "DUMP") {
-        console.log(`💀 DUMP detected — emergency exit`);
-        await closePosition(pos, tokenAddress, currentPrice, "chart_dump");
-        await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, "🚨 Emergency exit — DUMP pattern detected");
+        console.log(`💀 DUMP — emergency exit`);
+        await closePosition(pos, tokenAddress, currentPrice, pnlUsd, "chart_dump");
         continue;
       }
 
-      // DISTRIBUTION EXIT — smart money leaving, exit before crowd does
-      if (chart.shape === "DISTRIBUTION" && pnlPercent > 0) {
-        console.log(`🔴 DISTRIBUTION detected — exiting in profit`);
-        await closePosition(pos, tokenAddress, currentPrice, "chart_distribution");
-        await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, "🔴 Exit — DISTRIBUTION pattern (smart money leaving)");
+      // Exit on DISTRIBUTION if in profit
+      if (chart.shape === "DISTRIBUTION" && pnlPct > 0) {
+        console.log(`🔴 DISTRIBUTION — exiting in profit`);
+        await closePosition(pos, tokenAddress, currentPrice, pnlUsd, "chart_distribution");
         continue;
       }
 
-      // ── Standard Strategy ──────────────────────────────────────────────────
-      if (pos.strategy === "standard") {
-        // Take profit at 2x
-        if (pnlPercent >= (STRATEGY.standard.takeProfitMultiplier - 1) * 100) {
-          console.log(`🎯 TP hit — selling full position`);
-          await closePosition(pos, tokenAddress, currentPrice, "tp");
-          await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, "🎯 Take profit hit — 2x achieved");
-          continue;
-        }
-
-        // Tighten stop loss if FOMO detected (price ran too hard, likely to reverse)
-        const stopLoss = chart.shape === "FOMO"
-          ? STRATEGY.standard.stopLossPercent * 0.5  // tighten to 15% in FOMO
-          : STRATEGY.standard.stopLossPercent;        // normal 30%
-
-        if (pnlPercent <= -stopLoss) {
-          console.log(`🛑 SL hit — selling full position (stop: ${stopLoss}%)`);
-          await closePosition(pos, tokenAddress, currentPrice, "sl");
-          await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, `🛑 Stop loss hit (${stopLoss.toFixed(0)}%)`);
-          continue;
-        }
+      // ── Dead position check ────────────────────────────────────────────────
+      if (isDeadPosition(entryPrice, currentPrice, pos.opened_at)) {
+        console.log(`💤 Dead position — no movement in 30min, exiting`);
+        await closePosition(pos, tokenAddress, currentPrice, pnlUsd, "dead_position");
+        continue;
       }
 
-      // ── Outlier / Moonbag Strategy ─────────────────────────────────────────
-      if (pos.strategy === "outlier") {
-        // First trigger — sell 50% at 2x
-        if (!pos.moonbag_active && pnlPercent >= 100) {
-          console.log(`🌙 Moonbag triggered — selling 50%`);
-          await triggerMoonbag(pos, tokenAddress, currentPrice);
-          await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd / 2, "🌙 Moonbag activated — 50% sold at 2x, running remainder free");
-          continue;
-        }
+      // ── Ladder profit taking ───────────────────────────────────────────────
+      const ladderTargets = getLadderTargets(pos.strategy);
+      const ladderStage   = pos.ladder_stage ?? 0;
 
-        // Trailing stop on moonbag
-        if (pos.moonbag_active) {
-          const dropFromPeak = ((peakPrice - currentPrice) / peakPrice) * 100;
+      let hitLadder = false;
+      for (let i = ladderStage; i < ladderTargets.length; i++) {
+        const target = ladderTargets[i];
+        if (pnlPct >= (target.multiplier - 1) * 100 && target.sellPct > 0) {
+          console.log(`💰 ${target.action}`);
 
-          // Tighten trailing stop in FOMO or DISTRIBUTION
-          const trailingStop = (chart.shape === "FOMO" || chart.shape === "DISTRIBUTION")
-            ? STRATEGY.moonbag.trailingStopPercent * 0.6  // tighten to 15%
-            : STRATEGY.moonbag.trailingStopPercent;        // normal 25%
-
-          if (dropFromPeak >= trailingStop) {
-            console.log(`🛑 Trailing stop hit — selling moonbag (drop: ${dropFromPeak.toFixed(1)}%)`);
-            await closePosition(pos, tokenAddress, currentPrice, "tsl");
-            await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, `🛑 Trailing stop hit (${dropFromPeak.toFixed(1)}% from peak)`);
-            continue;
+          if (target.sellPct >= 1.0) {
+            // Full exit
+            await closePosition(pos, tokenAddress, currentPrice, pnlUsd, `ladder_${i + 1}`);
+          } else {
+            // Partial exit
+            await partialExit(pos, tokenAddress, currentPrice, target.sellPct, i + 1);
           }
+          hitLadder = true;
+          break;
         }
+      }
 
-        // Hard stop before moonbag activates
-        if (!pos.moonbag_active && pnlPercent <= -STRATEGY.standard.stopLossPercent) {
-          console.log(`🛑 SL hit on outlier — selling full`);
-          await closePosition(pos, tokenAddress, currentPrice, "sl");
-          await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, "🛑 Stop loss hit on outlier position");
+      if (hitLadder) continue;
+
+      // ── Outlier moonbag ───────────────────────────────────────────────────
+      if (pos.strategy === "outlier" && !pos.moonbag_active && pnlPct >= 100) {
+        console.log(`🌙 Moonbag triggered — selling 50%`);
+        await triggerMoonbag(pos, tokenAddress, currentPrice);
+        await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd / 2, "🌙 Moonbag — 50% sold at 2x");
+        continue;
+      }
+
+      // ── Trailing stop on moonbag ───────────────────────────────────────────
+      if (pos.moonbag_active) {
+        const dropFromPeak = ((peakPrice - currentPrice) / peakPrice) * 100;
+        const trailingStop = (chart.shape === "FOMO" || chart.shape === "DISTRIBUTION")
+          ? STRATEGY.moonbag.trailingStopPercent * 0.6
+          : STRATEGY.moonbag.trailingStopPercent;
+
+        if (dropFromPeak >= trailingStop) {
+          console.log(`🛑 Trailing stop hit — ${dropFromPeak.toFixed(1)}% from peak`);
+          await closePosition(pos, tokenAddress, currentPrice, pnlUsd, "tsl");
+          continue;
         }
+      }
+
+      // ── Hard stop loss ────────────────────────────────────────────────────
+      const stopLoss = chart.shape === "FOMO"
+        ? STRATEGY.standard.stopLossPercent * 0.5
+        : STRATEGY.standard.stopLossPercent;
+
+      if (pnlPct <= -stopLoss && !pos.moonbag_active) {
+        console.log(`🛑 Stop loss hit (${stopLoss}%)`);
+        await closePosition(pos, tokenAddress, currentPrice, pnlUsd, "sl");
       }
     }
   } catch (err: any) {
     console.error("❌ monitorPositions error:", err.message);
   }
+}
+
+// ─── Partial exit ─────────────────────────────────────────────────────────────
+
+async function partialExit(
+  pos:          Position,
+  tokenAddress: string,
+  currentPrice: number,
+  sellPct:      number,
+  ladderStage:  number,
+): Promise<void> {
+  const totalNative = BigInt(Math.floor(parseFloat(pos.amount_native) * 1e9));
+  const sellNative  = BigInt(Math.floor(Number(totalNative) * sellPct));
+  const remaining   = totalNative - sellNative;
+
+  await sellToken(tokenAddress, sellNative.toString());
+
+  const partialPnl = (currentPrice - pos.entry_price) / pos.entry_price * pos.amount_usd * sellPct;
+
+  await supabase.from("trades").update({
+    amount_native: remaining.toString(),
+    amount_usd:    pos.amount_usd * (1 - sellPct),
+    ladder_stage:  ladderStage,
+  }).eq("id", pos.id);
+
+  await sendExitAlert(tokenAddress, pos, currentPrice, partialPnl, `💰 Ladder ${ladderStage} — ${(sellPct * 100).toFixed(0)}% sold`);
+
+  console.log(`✅ Ladder ${ladderStage} — sold ${(sellPct * 100).toFixed(0)}%, PnL: $${partialPnl.toFixed(2)}`);
 }
 
 // ─── Moonbag trigger ──────────────────────────────────────────────────────────
@@ -197,8 +232,7 @@ async function triggerMoonbag(
   const halfNative  = totalNative / BigInt(2);
 
   if (halfNative < BigInt(STRATEGY.moonbag.minSolLamports)) {
-    console.log("⚠️ Amount too small for moonbag — selling full");
-    await closePosition(pos, tokenAddress, currentPrice, "tp");
+    await closePosition(pos, tokenAddress, currentPrice, 0, "tp_small");
     return;
   }
 
@@ -219,10 +253,9 @@ async function closePosition(
   pos:          Position,
   tokenAddress: string,
   currentPrice: number,
+  pnlUsd:       number,
   reason:       string,
 ): Promise<void> {
-  const pnlUsd = (currentPrice - pos.entry_price) / pos.entry_price * pos.amount_usd;
-
   await sellToken(tokenAddress, pos.amount_native);
 
   await supabase.from("trades").update({
@@ -232,7 +265,11 @@ async function closePosition(
     closed_at:  new Date().toISOString(),
   }).eq("id", pos.id);
 
-  console.log(`✅ Position closed — reason: ${reason} | PnL: $${pnlUsd.toFixed(2)}`);
+  // Record outcome in risk engine
+  await recordTradeOutcome(pnlUsd > 0, pnlUsd);
+
+  await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, reason);
+  console.log(`✅ Position closed — ${reason} | PnL: $${pnlUsd.toFixed(2)}`);
 }
 
 // ─── Exit alert ───────────────────────────────────────────────────────────────
@@ -245,16 +282,16 @@ async function sendExitAlert(
   reason:       string,
 ): Promise<void> {
   try {
-    const axios    = (await import("axios")).default;
+    const axios       = (await import("axios")).default;
     const { TELEGRAM } = await import("../../core/config");
+    const pnlEmoji    = pnlUsd >= 0 ? "✅" : "🔴";
 
-    const pnlEmoji = pnlUsd >= 0 ? "✅" : "🔴";
-    const message  = `
-${pnlEmoji} *POSITION CLOSED*
+    const message = `
+${pnlEmoji} *POSITION UPDATE*
 
-📍 \`${tokenAddress}\`
+📍 \`${tokenAddress.slice(0, 20)}...\`
 💰 PnL: ${pnlUsd >= 0 ? "+" : ""}$${pnlUsd.toFixed(2)}
-📊 Entry: $${pos.entry_price.toFixed(8)}
+📊 Entry: $${pos.entry_price?.toFixed(8)}
 📊 Exit:  $${currentPrice.toFixed(8)}
 📝 ${reason}
     `.trim();
@@ -263,29 +300,20 @@ ${pnlEmoji} *POSITION CLOSED*
       `https://api.telegram.org/bot${TELEGRAM.botToken}/sendMessage`,
       { chat_id: TELEGRAM.chatId, text: message, parse_mode: "Markdown" }
     );
-  } catch (err: any) {
-    console.error("❌ Exit alert error:", err.message);
-  }
+  } catch {}
 }
 
-// ─── Get current pair data ────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function getCurrentPairData(tokenAddress: string): Promise<any | null> {
   try {
     const axios = (await import("axios")).default;
-    const res = await axios.get(
+    const res   = await axios.get(
       `https://api.dexscreener.com/tokens/v1/solana/${tokenAddress}`,
       { timeout: 8000 }
     );
-    const pairs = res.data ?? [];
-    return pairs[0] ?? null;
+    return (res.data ?? [])[0] ?? null;
   } catch {
     return null;
   }
-}
-
-// Keep backward compatibility
-async function getCurrentPrice(tokenAddress: string): Promise<number | null> {
-  const pair = await getCurrentPairData(tokenAddress);
-  return pair ? parseFloat(pair.priceUsd ?? "0") : null;
 }
