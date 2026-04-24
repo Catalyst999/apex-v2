@@ -28,12 +28,10 @@ export function createWebhookServer(
   const app = express();
   app.use(express.json({ limit: "10mb" }));
 
-  // Health check
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", service: "catalyst-apex-trader", timestamp: new Date().toISOString() });
   });
 
-  // Main webhook endpoint
   app.post("/webhook", async (req, res) => {
     try {
       const secret = req.headers["authorization"] ?? req.query.secret;
@@ -134,7 +132,6 @@ export async function registerHeliusWebhook(): Promise<string | null> {
     const webhookUrl = `${SERVER.publicUrl}/webhook`;
     console.log(`📡 Registering Helius webhook: ${webhookUrl}`);
 
-    // Check if already registered
     const listRes = await axios.get(
       `https://api.helius.xyz/v0/webhooks?api-key=${HELIUS.apiKey}`
     );
@@ -147,7 +144,6 @@ export async function registerHeliusWebhook(): Promise<string | null> {
       return existing.webhookID;
     }
 
-    // Register new webhook
     const res = await axios.post(
       `https://api.helius.xyz/v0/webhooks?api-key=${HELIUS.apiKey}`,
       {

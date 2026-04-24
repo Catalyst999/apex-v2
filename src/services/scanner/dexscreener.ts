@@ -1,11 +1,11 @@
 // src/services/scanner/dexscreener.ts
-// Catalyst Apex Trader v2.1 — All-Round Scanner
+// Catalyst Apex Trader v2.2 — All-Round Scanner
 //
 // Scans ALL Solana tokens regardless of age.
 // Three data sources run in parallel:
-// 1. New pairs    — fresh launches (token profiles endpoint)
-// 2. Trending     — established coins with current momentum
-// 3. Gainers      — tokens breaking out right now
+// 1. New pairs      fresh launches (token profiles endpoint)
+// 2. Trending       established coins with current momentum
+// 3. Gainers        tokens breaking out right now
 //
 // Chart shape is the entry gate — not age.
 
@@ -35,10 +35,10 @@ export interface RawPair {
     h24: number;
   };
   txns: {
-    m5: { buys: number; sells: number; };
-    h1: { buys: number; sells: number; };
-    h6: { buys: number; sells: number; };
-    h24:{ buys: number; sells: number; };
+    m5:  { buys: number; sells: number };
+    h1:  { buys: number; sells: number };
+    h6:  { buys: number; sells: number };
+    h24: { buys: number; sells: number };
   };
   volume: {
     m5:  number;
@@ -74,43 +74,30 @@ const TRASH_PATTERNS = [
 
 function filterPairs(pairs: RawPair[]): RawPair[] {
   return pairs.filter((p) => {
-    // Must have core data
-    if (!p.liquidity?.usd) return false;
-    if (!p.baseToken?.address) return false;
+    if (!p.liquidity?.usd)      return false;
+    if (!p.baseToken?.address)  return false;
 
-    // Hard reject known large caps
     if (LARGE_CAP_SYMBOLS.has(p.baseToken.symbol?.toUpperCase())) return false;
 
-    // Hard reject MCap above $10M — we want coins with room to run
     const mcap = p.marketCap ?? p.fdv ?? 0;
-    if (mcap > 10_000_000) {
-      return false;
-    }
+    if (mcap > 10_000_000) return false;
+    if (mcap > 0 && mcap < 15_000) return false;
 
-    // Minimum MCap $15k — below this the deployer controls everything
-    if (mcap > 0 && mcap < 15_000) {
-      return false;
-    }
-
-    // Hard reject trash names
     const fullName = `${p.baseToken.name} ${p.baseToken.symbol}`;
     if (TRASH_PATTERNS.some((pat) => pat.test(fullName))) return false;
 
-    // Minimum liquidity $8k
     if (p.liquidity.usd < 8_000) return false;
 
-    // Must have some volume activity
-    const hasActivity = (p.volume?.m5 ?? 0) > 0 ||
-                        (p.volume?.h1 ?? 0) > 0 ||
-                        (p.volume?.h24 ?? 0) > 0;
+    const hasActivity =
+      (p.volume?.m5  ?? 0) > 0 ||
+      (p.volume?.h1  ?? 0) > 0 ||
+      (p.volume?.h24 ?? 0) > 0;
     if (!hasActivity) return false;
 
-    // Drop stablecoin pairs
     const quote = p.quoteToken?.symbol?.toUpperCase() ?? "";
     if (["USDC", "USDT", "BUSD", "DAI"].includes(quote)) return false;
 
-    // Drop dead tokens — no volume in 24h and price dropping
-    const vol24 = p.volume?.h24 ?? 0;
+    const vol24    = p.volume?.h24   ?? 0;
     const priceH24 = p.priceChange?.h24 ?? 0;
     if (vol24 === 0 && priceH24 < -50) return false;
 
@@ -135,7 +122,7 @@ async function fetchNewPairs(): Promise<RawPair[]> {
     if (solanaProfiles.length === 0) return [];
 
     const addresses = solanaProfiles.map((p: any) => p.tokenAddress as string);
-    const allPairs:  RawPair[] = [];
+    const allPairs: RawPair[] = [];
 
     for (let i = 0; i < addresses.length; i += 10) {
       const batch = addresses.slice(i, i + 10).join(",");
@@ -160,7 +147,7 @@ async function fetchNewPairs(): Promise<RawPair[]> {
   }
 }
 
-// ─── Trending tokens (established coins with momentum) ────────────────────────
+// ─── Trending tokens ──────────────────────────────────────────────────────────
 
 async function fetchTrendingPairs(): Promise<RawPair[]> {
   try {
@@ -169,8 +156,8 @@ async function fetchTrendingPairs(): Promise<RawPair[]> {
       { timeout: 10000 }
     );
 
-    const allBoosts: any[] = res.data ?? [];
-    const solanaAddresses  = allBoosts
+    const allBoosts: any[]  = res.data ?? [];
+    const solanaAddresses   = allBoosts
       .filter((p: any) => p.chainId === "solana")
       .map((p: any) => p.tokenAddress as string)
       .slice(0, 20);
@@ -203,7 +190,6 @@ async function fetchTrendingPairs(): Promise<RawPair[]> {
 
 async function fetchGainerPairs(): Promise<RawPair[]> {
   try {
-    // DexScreener search for top Solana gainers by 1h price change
     const res = await axios.get(
       "https://api.dexscreener.com/latest/dex/search?q=solana",
       { timeout: 10000 }
@@ -211,7 +197,6 @@ async function fetchGainerPairs(): Promise<RawPair[]> {
 
     const pairs: any[] = res.data?.pairs ?? [];
 
-    // Filter to Solana only, sort by 1h gain, take top 20
     return pairs
       .filter((p: any) => p.chainId === "solana")
       .sort((a: any, b: any) => (b.priceChange?.h1 ?? 0) - (a.priceChange?.h1 ?? 0))
@@ -224,12 +209,10 @@ async function fetchGainerPairs(): Promise<RawPair[]> {
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
-// Runs all 3 sources in parallel, deduplicates, filters, returns.
 
 export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
   console.log(`📡 Scanning: new pairs + trending + gainers...`);
 
-  // Run all 3 in parallel
   const [newPairs, trendingPairs, gainerPairs] = await Promise.all([
     fetchNewPairs(),
     fetchTrendingPairs(),
@@ -238,7 +221,6 @@ export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
 
   console.log(`   📦 New: ${newPairs.length} | Trending: ${trendingPairs.length} | Gainers: ${gainerPairs.length}`);
 
-  // Merge and deduplicate by token address
   const seen    = new Set<string>();
   const merged: RawPair[] = [];
 
@@ -257,7 +239,7 @@ export async function fetchNewSolanaPairs(): Promise<RawPair[]> {
   return filtered;
 }
 
-// ─── BSC scanner (unchanged) ──────────────────────────────────────────────────
+// ─── BSC scanner ─────────────────────────────────────────────────────────────
 
 export async function fetchNewBscPairs(): Promise<RawPair[]> {
   try {

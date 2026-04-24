@@ -1,5 +1,5 @@
 // src/services/telegram/bot.ts
-// v2.1 — Full pipeline with Risk Engine veto
+// Catalyst Apex Trader v2.2 — Full pipeline with Risk Engine veto
 
 import { fetchNewSolanaPairs }              from "../scanner/dexscreener";
 import { scanOnChain, cleanProcessedPools } from "../scanner/onchain-scanner";
@@ -14,15 +14,18 @@ import { checkRisk, resetDailyRiskState }   from "../execution/risk-engine";
 import { sendSignalAlert }                  from "./alerts";
 import { openPosition, monitorPositions }   from "../execution/positions";
 import { supabase }                         from "../../db/supabase";
-import { MODE, STRATEGY, FEATURE_FLAGS, TELEGRAM } from "../../core/config";
+import { MODE, FEATURE_FLAGS, TELEGRAM }    from "../../core/config";
 import axios from "axios";
 
 // ─── State ────────────────────────────────────────────────────────────────────
+// Map of address -> timestamp first seen.
+// Entries expire after 30 min so the same DexScreener tokens
+// don't block the pipeline forever.
+const scannedAddresses  = new Map<string, number>();
+const SCAN_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
-const scannedAddresses = new Set<string>();
-let AUTO_TRADE = false;
+let AUTO_TRADE    = false;
 let lastResetDate = new Date().toDateString();
-
 const recentPairsCache: any[] = [];
 const MAX_RECENT_CACHE = 100;
 
@@ -31,8 +34,27 @@ export function setAutoTrade(value: boolean): void {
   console.log(`⚙️  Auto-trade: ${AUTO_TRADE ? "ON" : "OFF"}`);
 }
 
-// ─── Daily reset ──────────────────────────────────────────────────────────────
+// ─── Cache helpers ────────────────────────────────────────────────────────────
+function isAlreadyScanned(address: string): boolean {
+  const ts = scannedAddresses.get(address);
+  if (!ts) return false;
+  if (Date.now() - ts < SCAN_CACHE_TTL_MS) return true;
+  scannedAddresses.delete(address); // expired
+  return false;
+}
 
+function markScanned(address: string): void {
+  scannedAddresses.set(address, Date.now());
+}
+
+function pruneScannedCache(): void {
+  const cutoff = Date.now() - SCAN_CACHE_TTL_MS;
+  for (const [addr, ts] of scannedAddresses) {
+    if (ts < cutoff) scannedAddresses.delete(addr);
+  }
+}
+
+// ─── Daily reset ──────────────────────────────────────────────────────────────
 async function checkDailyReset(): Promise<void> {
   const today = new Date().toDateString();
   if (today !== lastResetDate) {
@@ -42,7 +64,6 @@ async function checkDailyReset(): Promise<void> {
 }
 
 // ─── Core pipeline ────────────────────────────────────────────────────────────
-
 async function processPair(
   pair:           any,
   poolCreatedAt?: number,
@@ -50,32 +71,32 @@ async function processPair(
   onChainSignal?: string,
 ): Promise<void> {
   const address = pair.baseToken?.address ?? pair.tokenAddress;
-  if (!address)                       return;
-  if (scannedAddresses.has(address))  return;
-  scannedAddresses.add(address);
+  if (!address)                  return;
+  if (isAlreadyScanned(address)) return;
+  markScanned(address);
 
   const source = onChainSignal ? `⛓️  [${onChainSignal}]` : `📡`;
   console.log(`\n${source} 🪙 ${pair.baseToken?.name ?? address} (${pair.baseToken?.symbol ?? "?"})`);
 
-  // Security
+  // ── Security ─────────────────────────────────────────────────────────────
   const security = await runSecurityCheck(address, "solana", poolCreatedAt, deployer);
   if (!security.passed) {
     console.log(`❌ SECURITY FAILED: ${security.reason}`);
     return;
   }
 
-  // Score and route
+  // ── Score and route ───────────────────────────────────────────────────────
   const result = routePair(pair, security);
   console.log(`📊 Score: ${result.score.total}/100 → ${result.strategy.toUpperCase()}`);
 
-  // Crime pump
+  // ── Crime pump detection ──────────────────────────────────────────────────
   const crimePump = detectCrimePump(pair, recentPairsCache);
   if (crimePump.detected) {
     console.log(`🚨 CRIME PUMP: ${crimePump.type} (${crimePump.confidence}%)`);
     await sendCrimePumpAlert(pair, crimePump);
   }
 
-  // Outlier V2
+  // ── Outlier V2 ────────────────────────────────────────────────────────────
   let outlierV2Result: OutlierV2Result | null = null;
   if (FEATURE_FLAGS.useOutlierV2 && result.strategy !== "skip") {
     outlierV2Result = await runOutlierV2(pair, recentPairsCache, supabase);
@@ -92,14 +113,14 @@ async function processPair(
     return;
   }
 
-  // X social scan
+  // ── X social scan ─────────────────────────────────────────────────────────
   const xSignal = await scanXForToken(
     address,
     pair.baseToken?.name   ?? "",
     pair.baseToken?.symbol ?? "",
   );
 
-  // ── RISK ENGINE CHECK ──────────────────────────────────────────────────────
+  // ── Risk Engine veto ──────────────────────────────────────────────────────
   const riskDecision = await checkRisk({
     liquidityUsd:     result.score.details.liquidityUsd,
     volLiqRatio:      result.score.details.volLiqRatio,
@@ -112,16 +133,16 @@ async function processPair(
     onChainSignal,
   });
 
-  console.log(`🛡️  Risk Engine: ${riskDecision.allowed ? "✅ ALLOWED" : "❌ BLOCKED"} — ${riskDecision.reason}`);
-
+  console.log(`🛡️  Risk Engine: ${riskDecision.allowed ? "✅ ALLOWED" : "❌ BLOCKED"}   ${riskDecision.reason}`);
   if (!riskDecision.allowed) return;
 
-  // Claude AI analysis
+  // ── Claude AI analysis ────────────────────────────────────────────────────
   const ai = await analyzeWithHaiku(pair, result.score, result.strategy, xSignal);
   console.log(`🎯 Signal: ${ai.signal} | Rug risk: ${ai.rugRisk}%`);
 
   if (ai.signal !== "BUY") return;
 
+  // ── Save to Supabase ──────────────────────────────────────────────────────
   const { data: pairData } = await supabase
     .from("pairs")
     .insert({
@@ -154,10 +175,10 @@ async function processPair(
 }
 
 // ─── Scan cycles ──────────────────────────────────────────────────────────────
-
 async function dexScreenerScanCycle(): Promise<void> {
   console.log(`\n🔄 DexScreener scan: ${new Date().toLocaleTimeString()}`);
   await checkDailyReset();
+  pruneScannedCache();
 
   const pairs = await fetchNewSolanaPairs();
   console.log(`📡 Found ${pairs.length} pairs after filter`);
@@ -174,27 +195,25 @@ async function dexScreenerScanCycle(): Promise<void> {
 
 async function onChainScanCycle(): Promise<void> {
   console.log(`\n⛓️  On-chain scan: ${new Date().toLocaleTimeString()}`);
-
   const signals = await scanOnChain();
 
   for (const signal of signals) {
     const pair = await enrichPairFromDexScreener(signal.tokenAddress);
-
     if (!pair) {
       const rawPair = {
-        baseToken:    { address: signal.tokenAddress, name: signal.tokenAddress.slice(0, 8), symbol: "NEW" },
-        quoteToken:   { symbol: "SOL" },
-        priceUsd:     "0",
-        marketCap:    0,
-        fdv:          0,
-        priceChange:  { m5: 0, h1: 0, h6: 0, h24: 0 },
-        txns:         { m5: { buys: signal.uniqueBuyers, sells: 0 }, h1: { buys: signal.uniqueBuyers, sells: 0 }, h6: { buys: 0, sells: 0 }, h24: { buys: 0, sells: 0 } },
-        volume:       { m5: signal.avgBuySize * signal.uniqueBuyers, h1: 0, h6: 0, h24: 0 },
-        liquidity:    { usd: signal.initialSolLiq * 150 },
+        baseToken:     { address: signal.tokenAddress, name: signal.tokenAddress.slice(0, 8), symbol: "NEW" },
+        quoteToken:    { symbol: "SOL" },
+        priceUsd:      "0",
+        marketCap:     0,
+        fdv:           0,
+        priceChange:   { m5: 0, h1: 0, h6: 0, h24: 0 },
+        txns:          { m5: { buys: signal.uniqueBuyers, sells: 0 }, h1: { buys: signal.uniqueBuyers, sells: 0 }, h6: { buys: 0, sells: 0 }, h24: { buys: 0, sells: 0 } },
+        volume:        { m5: signal.avgBuySize * signal.uniqueBuyers, h1: 0, h6: 0, h24: 0 },
+        liquidity:     { usd: signal.initialSolLiq * 150 },
         pairCreatedAt: signal.poolCreatedAt * 1000,
-        chainId:      "solana",
-        pairAddress:  signal.tokenAddress,
-        deployer:     signal.deployer,
+        chainId:       "solana",
+        pairAddress:   signal.tokenAddress,
+        deployer:      signal.deployer,
       };
       await processPair(rawPair, signal.poolCreatedAt, signal.deployer, signal.signalType);
       continue;
@@ -209,7 +228,6 @@ async function onChainScanCycle(): Promise<void> {
 }
 
 // ─── Crime pump alert ─────────────────────────────────────────────────────────
-
 async function sendCrimePumpAlert(pair: any, crime: CrimePumpResult): Promise<void> {
   try {
     const mcap    = pair.marketCap ?? pair.fdv ?? 0;
@@ -219,11 +237,10 @@ async function sendCrimePumpAlert(pair: any, crime: CrimePumpResult): Promise<vo
 
     const message = `
 🚨 *POTENTIAL CRIME PUMP*
-
 🪙 *${pair.baseToken?.name}* (${pair.baseToken?.symbol})
 📊 Type: ${crime.type} | Confidence: ${crime.confidence}%
 💎 MCap: ${mcapStr} | Position: ${crime.positioning}
-${crime.canonical ? "✅ Canonical coin" : "⚠️ Not the volume leader"}
+${crime.canonical ? "✅ Canonical coin" : "⚠️  Not the volume leader"}
 📝 ${crime.reason}
 📍 \`${pair.baseToken?.address}\`
 🔗 [DexScreener](https://dexscreener.com/solana/${pair.baseToken?.address})
@@ -237,13 +254,13 @@ ${crime.canonical ? "✅ Canonical coin" : "⚠️ Not the volume leader"}
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-
 export async function startBot(): Promise<void> {
   console.log(`🤖 CATALYST APEX TRADER started`);
   console.log(`⚙️  Mode: ${MODE.toUpperCase()} | Auto-trade: ${AUTO_TRADE ? "ON" : "OFF"}`);
   console.log(`⚙️  AI Brain: Claude Haiku + extended thinking`);
   console.log(`⚙️  Risk Engine: ON | Daily target: 50 SOL`);
   console.log(`⚙️  DexScreener: every 60s | On-chain: every 2min`);
+  console.log(`⚙️  Scan cache TTL: 30min (tokens re-evaluated after expiry)`);
 
   await dexScreenerScanCycle();
   setInterval(dexScreenerScanCycle, 60_000);
