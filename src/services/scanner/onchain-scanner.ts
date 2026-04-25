@@ -1,28 +1,28 @@
 // src/services/scanner/onchain-scanner.ts
 // Catalyst Apex Trader v2.2 — On-Chain Scanner
 //
-// Uses Helius to watch the blockchain directly.
-// Catches tokens BEFORE they trend using signals invisible to DexScreener:
+// Watches the blockchain for pre-trend signals using Helius RPC.
+// Two sources run in parallel when Pump.fun scanner is enabled:
+//   1. Raydium AMM — established DEX pools
+//   2. Pump.fun    — where 90%+ of new Solana memecoins launch
 //
-// Signal 1 — New pool detection (Raydium LP creation)
-// Signal 2 — Accumulation pattern (same wallets buying repeatedly)
-// Signal 3 — Organic discovery (new wallets finding the token)
-// Signal 4 — Liquidity growth (SOL being added to pool)
-// Signal 5 — Survival signal (token still active after dump window)
-//
-// FIX: api.helius.xyz/v0/addresses/{addr}/transactions is deprecated (404).
-// Now uses:
-//   getSignaturesForAddress  via Helius RPC  (mainnet.helius-rpc.com)
-//   Enhanced Transactions    via api.helius.xyz/v0/transactions/
+// Signals detected:
+//   NEW_POOL          — fresh pool with early healthy activity
+//   ACCUMULATION      — same wallets buying repeatedly
+//   ORGANIC_DISCOVERY — many unique wallets, steady velocity
+//   LIQUIDITY_GROWTH  — SOL being added to pool over time
+//   SURVIVAL          — token still active after the dump window
+//   PUMP_NEW_TOKEN    — brand new Pump.fun token with momentum
+//   PUMP_GRADUATING   — Pump.fun token nearing graduation to Raydium
 
 import axios from "axios";
-import { HELIUS } from "../../core/config";
+import { HELIUS, FEATURE_FLAGS } from "../../core/config";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface OnChainSignal {
   tokenAddress:    string;
-  signalType:      "NEW_POOL" | "ACCUMULATION" | "ORGANIC_DISCOVERY" | "LIQUIDITY_GROWTH" | "SURVIVAL";
+  signalType:      "NEW_POOL" | "ACCUMULATION" | "ORGANIC_DISCOVERY" | "LIQUIDITY_GROWTH" | "SURVIVAL" | "PUMP_NEW_TOKEN" | "PUMP_GRADUATING";
   confidence:      number;
   poolCreatedAt:   number;
   deployer:        string;
@@ -34,22 +34,25 @@ export interface OnChainSignal {
   reason:          string;
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Program IDs ──────────────────────────────────────────────────────────────
 
-const RAYDIUM_AMM  = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
-const RAYDIUM_CLMM = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
-const SOL_MINT     = "So11111111111111111111111111111111111111112";
+const RAYDIUM_AMM    = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+const RAYDIUM_CLMM   = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
+const PUMP_FUN       = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";   // Pump.fun program
+const PUMP_MIGRATION = "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg"; // Pump.fun → Raydium graduation
+const SOL_MINT       = "So11111111111111111111111111111111111111112";
 
-// Correct Helius endpoints (2025)
+// ─── Helius endpoints ─────────────────────────────────────────────────────────
+
 const HELIUS_RPC      = () => `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
 const HELIUS_ENHANCED = () => `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.apiKey}`;
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
 
-const processedPools   = new Set<string>();
-const tokenSignalCache = new Map<string, OnChainSignal>();
+const processedPools  = new Set<string>();
+const processedPumps  = new Set<string>();
 
-// ─── RPC: getSignaturesForAddress ─────────────────────────────────────────────
+// ─── RPC helpers ──────────────────────────────────────────────────────────────
 
 async function getSignaturesForAddress(address: string, limit = 100): Promise<string[]> {
   try {
@@ -63,15 +66,12 @@ async function getSignaturesForAddress(address: string, limit = 100): Promise<st
       },
       { timeout: 12000 }
     );
-    const result = res.data?.result ?? [];
-    return result.map((r: any) => r.signature).filter(Boolean);
+    return (res.data?.result ?? []).map((r: any) => r.signature).filter(Boolean);
   } catch (err: any) {
     console.error(`❌ getSignaturesForAddress error (${address.slice(0, 8)}...):`, err.message);
     return [];
   }
 }
-
-// ─── Enhanced TX batch lookup ─────────────────────────────────────────────────
 
 async function fetchEnhancedTransactions(signatures: string[]): Promise<any[]> {
   if (signatures.length === 0) return [];
@@ -88,21 +88,18 @@ async function fetchEnhancedTransactions(signatures: string[]): Promise<any[]> {
   }
 }
 
-// ─── Fetch recent Raydium transactions ────────────────────────────────────────
+// ─── Fetch recent transactions for a program ──────────────────────────────────
 
-async function fetchRaydiumTransactions(limit = 100): Promise<any[]> {
+async function fetchProgramTransactions(programId: string, limit = 100): Promise<any[]> {
   try {
-    const signatures = await getSignaturesForAddress(RAYDIUM_AMM, limit);
+    const signatures = await getSignaturesForAddress(programId, limit);
     if (signatures.length === 0) return [];
-    console.log(`   🔍 Got ${signatures.length} Raydium signatures, fetching enhanced data...`);
     return await fetchEnhancedTransactions(signatures);
   } catch (err: any) {
-    console.error("❌ Helius Raydium fetch error:", err.message);
+    console.error(`❌ Program TX fetch error (${programId.slice(0, 8)}...):`, err.message);
     return [];
   }
 }
-
-// ─── Fetch token transaction history ─────────────────────────────────────────
 
 async function fetchTokenTransactions(tokenAddress: string, limit = 50): Promise<any[]> {
   try {
@@ -113,19 +110,19 @@ async function fetchTokenTransactions(tokenAddress: string, limit = 50): Promise
       (tx: any) => tx.type === "SWAP" || tx.description?.toLowerCase().includes("swap")
     );
   } catch (err: any) {
-    console.error(`❌ Token tx fetch error for ${tokenAddress.slice(0, 8)}...:`, err.message);
+    console.error(`❌ Token TX fetch error (${tokenAddress.slice(0, 8)}...):`, err.message);
     return [];
   }
 }
 
-// ─── Parse new pool from transaction ─────────────────────────────────────────
+// ─── Parse Raydium new pool ───────────────────────────────────────────────────
 
-function parseNewPool(
+function parseRaydiumPool(
   tx: any
 ): { tokenAddress: string; deployer: string; poolCreatedAt: number; initialSol: number } | null {
   try {
-    const accountKeys: string[]    = tx?.accountData?.map((a: any) => a.account) ?? [];
-    const tokenTransfers: any[]    = tx?.tokenTransfers ?? [];
+    const accountKeys: string[] = tx?.accountData?.map((a: any) => a.account) ?? [];
+    const tokenTransfers: any[] = tx?.tokenTransfers ?? [];
 
     if (!accountKeys.includes(RAYDIUM_AMM) && !accountKeys.includes(RAYDIUM_CLMM)) return null;
 
@@ -133,9 +130,7 @@ function parseNewPool(
     if (!tokenTransfer) return null;
 
     const solTransfer = tokenTransfers.find((t: any) => t.mint === SOL_MINT);
-    const initialSol  = solTransfer
-      ? Math.abs(Number(solTransfer.tokenAmount ?? 0)) / 1e9
-      : 0;
+    const initialSol  = solTransfer ? Math.abs(Number(solTransfer.tokenAmount ?? 0)) / 1e9 : 0;
 
     if (initialSol < 2) return null;
 
@@ -150,7 +145,71 @@ function parseNewPool(
   }
 }
 
-// ─── Analyze buyer behavior ───────────────────────────────────────────────────
+// ─── Parse Pump.fun token creation ───────────────────────────────────────────
+
+function parsePumpFunToken(
+  tx: any
+): { tokenAddress: string; deployer: string; createdAt: number; initialSol: number } | null {
+  try {
+    const accountKeys: string[] = tx?.accountData?.map((a: any) => a.account) ?? [];
+    const tokenTransfers: any[] = tx?.tokenTransfers ?? [];
+    const instructions: any[]   = tx?.instructions ?? [];
+
+    // Must involve Pump.fun program
+    const hasPump =
+      accountKeys.includes(PUMP_FUN) ||
+      instructions.some((ix: any) => ix.programId === PUMP_FUN);
+
+    if (!hasPump) return null;
+
+    // Find the new token
+    const tokenTransfer = tokenTransfers.find((t: any) => t.mint && t.mint !== SOL_MINT);
+    if (!tokenTransfer) return null;
+
+    // Get initial SOL (bonding curve seed)
+    const nativeTransfers: any[] = tx?.nativeTransfers ?? [];
+    const initialSol = nativeTransfers.reduce(
+      (sum: number, t: any) => sum + (t.amount ?? 0),
+      0
+    ) / 1e9;
+
+    return {
+      tokenAddress: tokenTransfer.mint,
+      deployer:     tx.feePayer ?? tx.signers?.[0] ?? "",
+      createdAt:    tx.timestamp ?? Math.floor(Date.now() / 1000),
+      initialSol:   Math.abs(initialSol),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Parse Pump.fun graduation (→ Raydium) ────────────────────────────────────
+
+function parsePumpGraduation(
+  tx: any
+): { tokenAddress: string; deployer: string; createdAt: number } | null {
+  try {
+    const accountKeys: string[] = tx?.accountData?.map((a: any) => a.account) ?? [];
+    const tokenTransfers: any[] = tx?.tokenTransfers ?? [];
+
+    // Must be a migration transaction
+    if (!accountKeys.includes(PUMP_MIGRATION) && !accountKeys.includes(RAYDIUM_AMM)) return null;
+
+    const tokenTransfer = tokenTransfers.find((t: any) => t.mint && t.mint !== SOL_MINT);
+    if (!tokenTransfer) return null;
+
+    return {
+      tokenAddress: tokenTransfer.mint,
+      deployer:     tx.feePayer ?? tx.signers?.[0] ?? "",
+      createdAt:    tx.timestamp ?? Math.floor(Date.now() / 1000),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Buyer analysis ───────────────────────────────────────────────────────────
 
 interface BuyerAnalysis {
   uniqueBuyers:   number;
@@ -199,7 +258,7 @@ function analyzeBuyers(txs: any[], poolCreatedAt: number): BuyerAnalysis {
   return { uniqueBuyers, repeatBuyers, avgBuySize, buyingVelocity, isAccumulation, isOrganic };
 }
 
-// ─── Check liquidity growth ───────────────────────────────────────────────────
+// ─── Liquidity growth check ───────────────────────────────────────────────────
 
 async function checkLiquidityGrowth(
   tokenAddress: string
@@ -219,30 +278,18 @@ async function checkLiquidityGrowth(
   }
 }
 
-// ─── Main scanner ─────────────────────────────────────────────────────────────
+// ─── Raydium scanner ──────────────────────────────────────────────────────────
 
-export async function scanOnChain(): Promise<OnChainSignal[]> {
+async function scanRaydium(): Promise<OnChainSignal[]> {
   const signals: OnChainSignal[] = [];
 
-  console.log(`⛓️  On-chain scan: watching Raydium for pre-trend signals...`);
+  const raydiumTxs = await fetchProgramTransactions(RAYDIUM_AMM, 100);
+  console.log(`   📦 Raydium: ${raydiumTxs.length} recent transactions`);
 
-  const raydiumTxs = await fetchRaydiumTransactions(100);
-  console.log(`   📦 ${raydiumTxs.length} recent Raydium transactions`);
-
-  if (raydiumTxs.length === 0) {
-    console.log(`   ⚠️  No Raydium data — check HELIUS_API_KEY env var`);
-    return signals;
-  }
-
-  const newPools: {
-    tokenAddress:  string;
-    deployer:      string;
-    poolCreatedAt: number;
-    initialSol:    number;
-  }[] = [];
+  const newPools: { tokenAddress: string; deployer: string; poolCreatedAt: number; initialSol: number }[] = [];
 
   for (const tx of raydiumTxs) {
-    const pool = parseNewPool(tx);
+    const pool = parseRaydiumPool(tx);
     if (!pool) continue;
     if (processedPools.has(pool.tokenAddress)) continue;
 
@@ -253,7 +300,7 @@ export async function scanOnChain(): Promise<OnChainSignal[]> {
     processedPools.add(pool.tokenAddress);
   }
 
-  console.log(`   🆕 ${newPools.length} new pools found`);
+  console.log(`   🆕 Raydium: ${newPools.length} new pools`);
 
   for (const pool of newPools) {
     const txs       = await fetchTokenTransactions(pool.tokenAddress, 50);
@@ -261,105 +308,175 @@ export async function scanOnChain(): Promise<OnChainSignal[]> {
     const liqGrowth = await checkLiquidityGrowth(pool.tokenAddress);
     const ageMinutes = (Date.now() / 1000 - pool.poolCreatedAt) / 60;
 
-    // Signal: NEW POOL
     if (buyers.uniqueBuyers >= 5 && buyers.buyingVelocity >= 0.3) {
       signals.push({
-        tokenAddress:   pool.tokenAddress,
-        signalType:     "NEW_POOL",
-        confidence:     Math.min(100, buyers.uniqueBuyers * 5 + 30),
-        poolCreatedAt:  pool.poolCreatedAt,
-        deployer:       pool.deployer,
-        initialSolLiq:  pool.initialSol,
-        uniqueBuyers:   buyers.uniqueBuyers,
-        repeatBuyers:   buyers.repeatBuyers,
-        avgBuySize:     buyers.avgBuySize,
-        buyingVelocity: buyers.buyingVelocity,
-        reason: `New pool (${ageMinutes.toFixed(0)}m old) — ${buyers.uniqueBuyers} unique buyers, ${buyers.buyingVelocity.toFixed(2)} buys/min, ${pool.initialSol.toFixed(2)} SOL liquidity`,
+        tokenAddress: pool.tokenAddress, signalType: "NEW_POOL",
+        confidence: Math.min(100, buyers.uniqueBuyers * 5 + 30),
+        poolCreatedAt: pool.poolCreatedAt, deployer: pool.deployer,
+        initialSolLiq: pool.initialSol,
+        uniqueBuyers: buyers.uniqueBuyers, repeatBuyers: buyers.repeatBuyers,
+        avgBuySize: buyers.avgBuySize, buyingVelocity: buyers.buyingVelocity,
+        reason: `New Raydium pool (${ageMinutes.toFixed(0)}m) — ${buyers.uniqueBuyers} buyers, ${buyers.buyingVelocity.toFixed(2)} buys/min, ${pool.initialSol.toFixed(2)} SOL`,
       });
       continue;
     }
-
-    // Signal: ACCUMULATION
     if (buyers.isAccumulation) {
       signals.push({
-        tokenAddress:   pool.tokenAddress,
-        signalType:     "ACCUMULATION",
-        confidence:     Math.min(100, buyers.repeatBuyers * 15 + 40),
-        poolCreatedAt:  pool.poolCreatedAt,
-        deployer:       pool.deployer,
-        initialSolLiq:  pool.initialSol,
-        uniqueBuyers:   buyers.uniqueBuyers,
-        repeatBuyers:   buyers.repeatBuyers,
-        avgBuySize:     buyers.avgBuySize,
-        buyingVelocity: buyers.buyingVelocity,
-        reason: `Accumulation pattern — ${buyers.repeatBuyers} wallets bought multiple times, avg ${buyers.avgBuySize.toFixed(3)} SOL/buy`,
+        tokenAddress: pool.tokenAddress, signalType: "ACCUMULATION",
+        confidence: Math.min(100, buyers.repeatBuyers * 15 + 40),
+        poolCreatedAt: pool.poolCreatedAt, deployer: pool.deployer,
+        initialSolLiq: pool.initialSol,
+        uniqueBuyers: buyers.uniqueBuyers, repeatBuyers: buyers.repeatBuyers,
+        avgBuySize: buyers.avgBuySize, buyingVelocity: buyers.buyingVelocity,
+        reason: `Accumulation — ${buyers.repeatBuyers} wallets buying repeatedly, avg ${buyers.avgBuySize.toFixed(3)} SOL`,
       });
       continue;
     }
-
-    // Signal: ORGANIC DISCOVERY
     if (buyers.isOrganic) {
       signals.push({
-        tokenAddress:   pool.tokenAddress,
-        signalType:     "ORGANIC_DISCOVERY",
-        confidence:     Math.min(100, buyers.uniqueBuyers * 4 + 20),
-        poolCreatedAt:  pool.poolCreatedAt,
-        deployer:       pool.deployer,
-        initialSolLiq:  pool.initialSol,
-        uniqueBuyers:   buyers.uniqueBuyers,
-        repeatBuyers:   buyers.repeatBuyers,
-        avgBuySize:     buyers.avgBuySize,
-        buyingVelocity: buyers.buyingVelocity,
-        reason: `Organic discovery — ${buyers.uniqueBuyers} unique wallets finding this token naturally at ${buyers.buyingVelocity.toFixed(2)} buys/min`,
+        tokenAddress: pool.tokenAddress, signalType: "ORGANIC_DISCOVERY",
+        confidence: Math.min(100, buyers.uniqueBuyers * 4 + 20),
+        poolCreatedAt: pool.poolCreatedAt, deployer: pool.deployer,
+        initialSolLiq: pool.initialSol,
+        uniqueBuyers: buyers.uniqueBuyers, repeatBuyers: buyers.repeatBuyers,
+        avgBuySize: buyers.avgBuySize, buyingVelocity: buyers.buyingVelocity,
+        reason: `Organic — ${buyers.uniqueBuyers} unique wallets at ${buyers.buyingVelocity.toFixed(2)} buys/min`,
       });
       continue;
     }
-
-    // Signal: LIQUIDITY GROWTH
     if (liqGrowth.growing) {
       signals.push({
-        tokenAddress:   pool.tokenAddress,
-        signalType:     "LIQUIDITY_GROWTH",
-        confidence:     Math.min(100, liqGrowth.addCount * 20 + 30),
-        poolCreatedAt:  pool.poolCreatedAt,
-        deployer:       pool.deployer,
-        initialSolLiq:  pool.initialSol,
-        uniqueBuyers:   buyers.uniqueBuyers,
-        repeatBuyers:   buyers.repeatBuyers,
-        avgBuySize:     buyers.avgBuySize,
-        buyingVelocity: buyers.buyingVelocity,
-        reason: `Liquidity growing — ${liqGrowth.addCount} LP additions, community adding trust`,
+        tokenAddress: pool.tokenAddress, signalType: "LIQUIDITY_GROWTH",
+        confidence: Math.min(100, liqGrowth.addCount * 20 + 30),
+        poolCreatedAt: pool.poolCreatedAt, deployer: pool.deployer,
+        initialSolLiq: pool.initialSol,
+        uniqueBuyers: buyers.uniqueBuyers, repeatBuyers: buyers.repeatBuyers,
+        avgBuySize: buyers.avgBuySize, buyingVelocity: buyers.buyingVelocity,
+        reason: `Liquidity growing — ${liqGrowth.addCount} LP additions`,
       });
       continue;
     }
-
-    // Signal: SURVIVAL
     if (ageMinutes >= 60 && buyers.uniqueBuyers >= 3 && buyers.buyingVelocity >= 0.1) {
       signals.push({
-        tokenAddress:   pool.tokenAddress,
-        signalType:     "SURVIVAL",
-        confidence:     Math.min(100, Math.floor(ageMinutes / 60) * 10 + 30),
-        poolCreatedAt:  pool.poolCreatedAt,
-        deployer:       pool.deployer,
-        initialSolLiq:  pool.initialSol,
-        uniqueBuyers:   buyers.uniqueBuyers,
-        repeatBuyers:   buyers.repeatBuyers,
-        avgBuySize:     buyers.avgBuySize,
-        buyingVelocity: buyers.buyingVelocity,
-        reason: `Survival signal — ${(ageMinutes / 60).toFixed(1)}h old, still getting ${buyers.uniqueBuyers} buyers, not dead`,
+        tokenAddress: pool.tokenAddress, signalType: "SURVIVAL",
+        confidence: Math.min(100, Math.floor(ageMinutes / 60) * 10 + 30),
+        poolCreatedAt: pool.poolCreatedAt, deployer: pool.deployer,
+        initialSolLiq: pool.initialSol,
+        uniqueBuyers: buyers.uniqueBuyers, repeatBuyers: buyers.repeatBuyers,
+        avgBuySize: buyers.avgBuySize, buyingVelocity: buyers.buyingVelocity,
+        reason: `Survival — ${(ageMinutes / 60).toFixed(1)}h old, still getting ${buyers.uniqueBuyers} buyers`,
       });
     }
   }
+
+  return signals;
+}
+
+// ─── Pump.fun scanner ─────────────────────────────────────────────────────────
+
+async function scanPumpFun(): Promise<OnChainSignal[]> {
+  const signals: OnChainSignal[] = [];
+
+  // Fetch both new token creations and graduation events in parallel
+  const [pumpTxs, migrationTxs] = await Promise.all([
+    fetchProgramTransactions(PUMP_FUN, 100),
+    fetchProgramTransactions(PUMP_MIGRATION, 50),
+  ]);
+
+  console.log(`   🎪 Pump.fun: ${pumpTxs.length} txs | Graduations: ${migrationTxs.length} txs`);
+
+  // ── New Pump.fun tokens ───────────────────────────────────────────────────
+  const newPumpTokens: { tokenAddress: string; deployer: string; createdAt: number; initialSol: number }[] = [];
+
+  for (const tx of pumpTxs) {
+    const token = parsePumpFunToken(tx);
+    if (!token) continue;
+    if (processedPumps.has(token.tokenAddress)) continue;
+
+    const ageMinutes = (Date.now() / 1000 - token.createdAt) / 60;
+    if (ageMinutes > 30) continue; // Only look at tokens < 30 min old
+
+    newPumpTokens.push(token);
+    processedPumps.add(token.tokenAddress);
+  }
+
+  for (const token of newPumpTokens) {
+    const txs    = await fetchTokenTransactions(token.tokenAddress, 30);
+    const buyers = analyzeBuyers(txs, token.createdAt);
+    const ageMinutes = (Date.now() / 1000 - token.createdAt) / 60;
+
+    // Only signal if there's genuine organic activity
+    if (buyers.uniqueBuyers >= 10 && buyers.buyingVelocity >= 1.0) {
+      signals.push({
+        tokenAddress:  token.tokenAddress,
+        signalType:    "PUMP_NEW_TOKEN",
+        confidence:    Math.min(100, buyers.uniqueBuyers * 4 + buyers.buyingVelocity * 5),
+        poolCreatedAt: token.createdAt,
+        deployer:      token.deployer,
+        initialSolLiq: token.initialSol,
+        uniqueBuyers:  buyers.uniqueBuyers,
+        repeatBuyers:  buyers.repeatBuyers,
+        avgBuySize:    buyers.avgBuySize,
+        buyingVelocity: buyers.buyingVelocity,
+        reason: `Pump.fun new token (${ageMinutes.toFixed(0)}m) — ${buyers.uniqueBuyers} buyers at ${buyers.buyingVelocity.toFixed(2)} buys/min`,
+      });
+    }
+  }
+
+  // ── Graduating tokens (Pump → Raydium) ────────────────────────────────────
+  for (const tx of migrationTxs) {
+    const grad = parsePumpGraduation(tx);
+    if (!grad) continue;
+    if (processedPumps.has(`grad_${grad.tokenAddress}`)) continue;
+
+    processedPumps.add(`grad_${grad.tokenAddress}`);
+
+    // A graduation means the bonding curve filled — very bullish signal
+    signals.push({
+      tokenAddress:  grad.tokenAddress,
+      signalType:    "PUMP_GRADUATING",
+      confidence:    85, // Graduation is a strong signal by definition
+      poolCreatedAt: grad.createdAt,
+      deployer:      grad.deployer,
+      initialSolLiq: 85, // Pump.fun requires ~85 SOL to graduate
+      uniqueBuyers:  0,
+      repeatBuyers:  0,
+      avgBuySize:    0,
+      buyingVelocity: 0,
+      reason:        `Pump.fun graduation — bonding curve filled, migrating to Raydium now`,
+    });
+  }
+
+  return signals;
+}
+
+// ─── Main scanner ─────────────────────────────────────────────────────────────
+
+export async function scanOnChain(): Promise<OnChainSignal[]> {
+  console.log(`⛓️  On-chain scan: Raydium${FEATURE_FLAGS.usePumpFunScanner ? " + Pump.fun" : ""}...`);
+
+  const scanners: Promise<OnChainSignal[]>[] = [scanRaydium()];
+
+  if (FEATURE_FLAGS.usePumpFunScanner) {
+    scanners.push(scanPumpFun());
+  }
+
+  const results = await Promise.all(scanners);
+  const signals = results.flat();
 
   console.log(`   🎯 ${signals.length} on-chain signals detected`);
   return signals;
 }
 
-// ─── Clean old processed pools ────────────────────────────────────────────────
+// ─── Clean up caches ──────────────────────────────────────────────────────────
 
 export function cleanProcessedPools(): void {
   if (processedPools.size > 1000) {
     const arr = [...processedPools];
     arr.slice(0, 500).forEach((p) => processedPools.delete(p));
+  }
+  if (processedPumps.size > 2000) {
+    const arr = [...processedPumps];
+    arr.slice(0, 1000).forEach((p) => processedPumps.delete(p));
   }
 }

@@ -1,7 +1,7 @@
 // src/core/config.ts
 
 import * as dotenv from "dotenv";
-import * as fs from "fs";
+import * as fs     from "fs";
 import { Keypair } from "@solana/web3.js";
 dotenv.config();
 
@@ -22,14 +22,14 @@ function loadSolanaKeypair(): Keypair {
   if (!fs.existsSync(keyPath)) {
     throw new Error(`Solana key not found at: ${keyPath}`);
   }
-  const raw = fs.readFileSync(keyPath, "utf-8");
+  const raw    = fs.readFileSync(keyPath, "utf-8");
   const parsed = JSON.parse(raw);
   return Keypair.fromSecretKey(Uint8Array.from(parsed));
 }
 
 // ─── Mode ─────────────────────────────────────────────────────────────────────
 export type TradeMode = "testing" | "live";
-export const MODE = (process.env.TRADE_MODE ?? "testing") as TradeMode;
+export const MODE             = (process.env.TRADE_MODE ?? "testing") as TradeMode;
 export const TRADE_AMOUNT_USD = MODE === "live" ? 5 : 3;
 
 // ─── Solana ───────────────────────────────────────────────────────────────────
@@ -105,6 +105,23 @@ export const STRATEGY = {
   },
 };
 
+// ─── Bundle Detection Thresholds ─────────────────────────────────────────────
+// Tune these via Railway env vars without redeploying:
+//   BUNDLE_SAME_BLOCK_MIN_WALLETS  — wallets in same 2s window = bundle  (default: 6)
+//   BUNDLE_COMMON_FUNDER_PCT       — % sharing a funder wallet = bundle  (default: 0.4)
+//   BUNDLE_MIRROR_AMOUNT_MIN       — wallets with identical amounts       (default: 4)
+//   BUNDLE_FRESH_WALLET_PCT        — % of early buyers that are new       (default: 0.5)
+//
+// To loosen the filter and let more tokens through, raise these values in Railway:
+//   BUNDLE_SAME_BLOCK_MIN_WALLETS=10
+//   BUNDLE_COMMON_FUNDER_PCT=0.6
+export const BUNDLE_THRESHOLDS = {
+  sameBlockMinWallets: parseInt(process.env.BUNDLE_SAME_BLOCK_MIN_WALLETS ?? "6"),
+  commonFunderPct:     parseFloat(process.env.BUNDLE_COMMON_FUNDER_PCT    ?? "0.4"),
+  mirrorAmountMin:     parseInt(process.env.BUNDLE_MIRROR_AMOUNT_MIN      ?? "4"),
+  freshWalletPct:      parseFloat(process.env.BUNDLE_FRESH_WALLET_PCT     ?? "0.5"),
+};
+
 // ─── Helius ───────────────────────────────────────────────────────────────────
 export const HELIUS = {
   apiKey:        process.env.HELIUS_API_KEY        ?? "",
@@ -125,6 +142,8 @@ export const FEATURE_FLAGS = {
   useHeliusWebhooks:     process.env.USE_HELIUS_WEBHOOKS     === "true",
   usePumpFunMonitor:     process.env.USE_PUMP_FUN_MONITOR    === "true",
   useOutlierV2:          process.env.USE_OUTLIER_V2          === "true",
+  // Pump.fun on-chain scanner — set USE_PUMP_FUN_SCANNER=true in Railway to enable
+  usePumpFunScanner:     process.env.USE_PUMP_FUN_SCANNER    === "true",
 };
 
 // ─── Boot Log ─────────────────────────────────────────────────────────────────
@@ -138,6 +157,8 @@ export function printConfig(): void {
 ║ SOL Wallet   : ${SOLANA.keypair.publicKey.toBase58().slice(0, 20)}...  ║
 ║ Bundle Check : ${(FEATURE_FLAGS.enableBundleDetection ? "ON" : "OFF").padEnd(22)}║
 ║ Deployer Chk : ${(FEATURE_FLAGS.enableDeployerCheck   ? "ON" : "OFF").padEnd(22)}║
+║ Pump.fun Scan: ${(FEATURE_FLAGS.usePumpFunScanner      ? "ON" : "OFF").padEnd(22)}║
+║ Bundle Block : ${String("min " + BUNDLE_THRESHOLDS.sameBlockMinWallets + " wallets").padEnd(22)}║
 ║ Max Holder % : ${String(STRATEGY.security.maxTopHolderPercent + "%").padEnd(22)}║
 ║ Daily Trade  : ${String("max " + STRATEGY.scanner.maxDailyTrades).padEnd(22)}║
 ║ X API        : ${(X_API.bearerToken ? "ON" : "OFF").padEnd(22)}║
