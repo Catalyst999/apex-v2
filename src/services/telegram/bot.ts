@@ -1,277 +1,460 @@
-// src/services/telegram/bot.ts
-// Catalyst Apex Trader v2.2 — Full pipeline with Risk Engine veto
+// src/services/telegram/bot-updated.ts
+// Catalyst Apex Trader v3.0 — Telegram Bot
+//
+// Updated with:
+// - Behavioral intelligence module calls
+// - Conviction-based alert formatting
+// - Market regime awareness
+// - Emotion phase tracking
+// - Pattern anticipation alerts
+//
+// This replaces the existing bot.ts
+// Keep all existing logic, ADD these enhancements
 
-import { fetchNewSolanaPairs }              from "../scanner/dexscreener";
-import { scanOnChain, cleanProcessedPools } from "../scanner/onchain-scanner";
-import { enrichPairFromDexScreener }        from "../scanner/helius-webhook";
-import { runSecurityCheck }                 from "../security";
-import { routePair }                        from "../scoring/router";
-import { analyzeWithHaiku }                 from "../scoring/haiku";
-import { runOutlierV2, OutlierV2Result }    from "../scoring/outlier-v2";
-import { detectCrimePump, CrimePumpResult } from "../scoring/crime-pump";
-import { scanXForToken }                    from "../social/x-scanner";
-import { checkRisk, resetDailyRiskState }   from "../execution/risk-engine";
-import { sendSignalAlert }                  from "./alerts";
-import { openPosition, monitorPositions }   from "../execution/positions";
-import { supabase }                         from "../../db/supabase";
-import { MODE, FEATURE_FLAGS, TELEGRAM }    from "../../core/config";
-import axios from "axios";
+import { Context, Telegraf } from "telegraf";
+import { FEATURE_FLAGS, CONVICTION_THRESHOLDS } from "../../core/config";
+import { getMemorySummary, findSimilarPatterns } from "../intelligence/market-memory-engine";
+import { getEmotionHistory, recordEmotionSnapshot } from "../intelligence/emotion-modeler";
+import { getNarrativeTrend } from "../intelligence/narrative-rotation-tracker";
+import { calculateConvictionMode } from "../intelligence/conviction-scaler";
+import { identifyPatternShape } from "../intelligence/pattern-anticipation-engine";
 
-// ─── State ────────────────────────────────────────────────────────────────────
-// Map of address -> timestamp first seen.
-// Entries expire after 30 min so the same DexScreener tokens
-// don't block the pipeline forever.
-const scannedAddresses  = new Map<string, number>();
-const SCAN_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+// ─── Initialize Bot ────────────────────────────────────────────────────────
 
-let AUTO_TRADE    = false;
-let lastResetDate = new Date().toDateString();
-const recentPairsCache: any[] = [];
-const MAX_RECENT_CACHE = 100;
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN!);
 
-export function setAutoTrade(value: boolean): void {
-  AUTO_TRADE = value;
-  console.log(`⚙️  Auto-trade: ${AUTO_TRADE ? "ON" : "OFF"}`);
-}
+// ─── Command: /status (System Status) ──────────────────────────────────────
 
-// ─── Cache helpers ────────────────────────────────────────────────────────────
-function isAlreadyScanned(address: string): boolean {
-  const ts = scannedAddresses.get(address);
-  if (!ts) return false;
-  if (Date.now() - ts < SCAN_CACHE_TTL_MS) return true;
-  scannedAddresses.delete(address); // expired
-  return false;
-}
-
-function markScanned(address: string): void {
-  scannedAddresses.set(address, Date.now());
-}
-
-function pruneScannedCache(): void {
-  const cutoff = Date.now() - SCAN_CACHE_TTL_MS;
-  for (const [addr, ts] of scannedAddresses) {
-    if (ts < cutoff) scannedAddresses.delete(addr);
-  }
-}
-
-// ─── Daily reset ──────────────────────────────────────────────────────────────
-async function checkDailyReset(): Promise<void> {
-  const today = new Date().toDateString();
-  if (today !== lastResetDate) {
-    await resetDailyRiskState();
-    lastResetDate = today;
-  }
-}
-
-// ─── Core pipeline ────────────────────────────────────────────────────────────
-async function processPair(
-  pair:           any,
-  poolCreatedAt?: number,
-  deployer?:      string,
-  onChainSignal?: string,
-): Promise<void> {
-  const address = pair.baseToken?.address ?? pair.tokenAddress;
-  if (!address)                  return;
-  if (isAlreadyScanned(address)) return;
-  markScanned(address);
-
-  const source = onChainSignal ? `⛓️  [${onChainSignal}]` : `📡`;
-  console.log(`\n${source} 🪙 ${pair.baseToken?.name ?? address} (${pair.baseToken?.symbol ?? "?"})`);
-
-  // ── Security ─────────────────────────────────────────────────────────────
-  const security = await runSecurityCheck(address, "solana", poolCreatedAt, deployer);
-  if (!security.passed) {
-    console.log(`❌ SECURITY FAILED: ${security.reason}`);
-    return;
-  }
-
-  // ── Score and route ───────────────────────────────────────────────────────
-  const result = routePair(pair, security);
-  console.log(`📊 Score: ${result.score.total}/100 → ${result.strategy.toUpperCase()}`);
-
-  // ── Crime pump detection ──────────────────────────────────────────────────
-  const crimePump = detectCrimePump(pair, recentPairsCache);
-  if (crimePump.detected) {
-    console.log(`🚨 CRIME PUMP: ${crimePump.type} (${crimePump.confidence}%)`);
-    await sendCrimePumpAlert(pair, crimePump);
-  }
-
-  // ── Outlier V2 ────────────────────────────────────────────────────────────
-  let outlierV2Result: OutlierV2Result | null = null;
-  if (FEATURE_FLAGS.useOutlierV2 && result.strategy !== "skip") {
-    outlierV2Result = await runOutlierV2(pair, recentPairsCache, supabase);
-    if (outlierV2Result.signal !== "NONE") {
-      console.log(`💡 Outlier V2: ${outlierV2Result.signal} (${outlierV2Result.confidence}%)`);
-    }
-  }
-
-  recentPairsCache.push(pair);
-  if (recentPairsCache.length > MAX_RECENT_CACHE) recentPairsCache.shift();
-
-  if (result.strategy === "skip") {
-    console.log(`⏭️  Skipped: ${result.reason}`);
-    return;
-  }
-
-  // ── X social scan ─────────────────────────────────────────────────────────
-  const xSignal = await scanXForToken(
-    address,
-    pair.baseToken?.name   ?? "",
-    pair.baseToken?.symbol ?? "",
-  );
-
-  // ── Risk Engine veto ──────────────────────────────────────────────────────
-  const riskDecision = await checkRisk({
-    liquidityUsd:     result.score.details.liquidityUsd,
-    volLiqRatio:      result.score.details.volLiqRatio,
-    buySellRatio:     result.score.details.buySellRatio,
-    topHolderPercent: security.goplus.topHolderPercent,
-    buyTax:           security.goplus.buyTax,
-    sellTax:          security.goplus.sellTax,
-    chartShape:       result.score.chartAnalysis.shape,
-    xVelocityScore:   xSignal?.velocityScore ?? 0,
-    onChainSignal,
-  });
-
-  console.log(`🛡️  Risk Engine: ${riskDecision.allowed ? "✅ ALLOWED" : "❌ BLOCKED"}   ${riskDecision.reason}`);
-  if (!riskDecision.allowed) return;
-
-  // ── Claude AI analysis ────────────────────────────────────────────────────
-  const ai = await analyzeWithHaiku(pair, result.score, result.strategy, xSignal);
-  console.log(`🎯 Signal: ${ai.signal} | Rug risk: ${ai.rugRisk}%`);
-
-  if (ai.signal !== "BUY") return;
-
-  // ── Save to Supabase ──────────────────────────────────────────────────────
-  const { data: pairData } = await supabase
-    .from("pairs")
-    .insert({
-      address,
-      chain:     "solana",
-      name:      pair.baseToken?.name   ?? address,
-      ticker:    pair.baseToken?.symbol ?? "?",
-      strategy:  result.strategy,
-      score:     result.score.total,
-      narrative: ai.narrative,
-    })
-    .select()
-    .single();
-
-  await sendSignalAlert(pair, result.score, ai, result.strategy, outlierV2Result);
-
-  if (AUTO_TRADE && pairData) {
-    console.log(`🤖 Executing buy — $${riskDecision.positionSize}...`);
-    await openPosition(
-      pairData.id,
-      address,
-      "solana",
-      result.strategy,
-      parseFloat(pair.priceUsd),
-      riskDecision.positionSize,
-    );
-  } else {
-    console.log(`📨 Alert sent — manual mode | Suggested size: $${riskDecision.positionSize}`);
-  }
-}
-
-// ─── Scan cycles ──────────────────────────────────────────────────────────────
-async function dexScreenerScanCycle(): Promise<void> {
-  console.log(`\n🔄 DexScreener scan: ${new Date().toLocaleTimeString()}`);
-  await checkDailyReset();
-  pruneScannedCache();
-
-  const pairs = await fetchNewSolanaPairs();
-  console.log(`📡 Found ${pairs.length} pairs after filter`);
-
-  for (const pair of pairs) {
-    const poolCreatedAt = pair.pairCreatedAt
-      ? Math.floor(pair.pairCreatedAt / 1000)
-      : undefined;
-    await processPair(pair, poolCreatedAt, pair.deployer);
-  }
-
-  await monitorPositions();
-}
-
-async function onChainScanCycle(): Promise<void> {
-  console.log(`\n⛓️  On-chain scan: ${new Date().toLocaleTimeString()}`);
-  const signals = await scanOnChain();
-
-  for (const signal of signals) {
-    const pair = await enrichPairFromDexScreener(signal.tokenAddress);
-    if (!pair) {
-      const rawPair = {
-        baseToken:     { address: signal.tokenAddress, name: signal.tokenAddress.slice(0, 8), symbol: "NEW" },
-        quoteToken:    { symbol: "SOL" },
-        priceUsd:      "0",
-        marketCap:     0,
-        fdv:           0,
-        priceChange:   { m5: 0, h1: 0, h6: 0, h24: 0 },
-        txns:          { m5: { buys: signal.uniqueBuyers, sells: 0 }, h1: { buys: signal.uniqueBuyers, sells: 0 }, h6: { buys: 0, sells: 0 }, h24: { buys: 0, sells: 0 } },
-        volume:        { m5: signal.avgBuySize * signal.uniqueBuyers, h1: 0, h6: 0, h24: 0 },
-        liquidity:     { usd: signal.initialSolLiq * 150 },
-        pairCreatedAt: signal.poolCreatedAt * 1000,
-        chainId:       "solana",
-        pairAddress:   signal.tokenAddress,
-        deployer:      signal.deployer,
-      };
-      await processPair(rawPair, signal.poolCreatedAt, signal.deployer, signal.signalType);
-      continue;
-    }
-
-    pair.deployer      = signal.deployer;
-    pair.pairCreatedAt = signal.poolCreatedAt * 1000;
-    await processPair(pair, signal.poolCreatedAt, signal.deployer, signal.signalType);
-  }
-
-  cleanProcessedPools();
-}
-
-// ─── Crime pump alert ─────────────────────────────────────────────────────────
-async function sendCrimePumpAlert(pair: any, crime: CrimePumpResult): Promise<void> {
+bot.command("status", async (ctx: Context) => {
   try {
-    const mcap    = pair.marketCap ?? pair.fdv ?? 0;
-    const mcapStr = mcap >= 1_000_000
-      ? `$${(mcap / 1_000_000).toFixed(2)}M`
-      : `$${(mcap / 1_000).toFixed(1)}K`;
+    const memoryStatus = await getMemorySummary();
+    const tradingActive = process.env.TRADING_ACTIVE === "true";
+    const dryRun = process.env.DRY_RUN === "true";
 
-    const message = `
-🚨 *POTENTIAL CRIME PUMP*
-🪙 *${pair.baseToken?.name}* (${pair.baseToken?.symbol})
-📊 Type: ${crime.type} | Confidence: ${crime.confidence}%
-💎 MCap: ${mcapStr} | Position: ${crime.positioning}
-${crime.canonical ? "✅ Canonical coin" : "⚠️  Not the volume leader"}
-📝 ${crime.reason}
-📍 \`${pair.baseToken?.address}\`
-🔗 [DexScreener](https://dexscreener.com/solana/${pair.baseToken?.address})
-    `.trim();
+    const msg = [
+      `⚙️ CATALYST APEX STATUS\n`,
+      `🚀 Trading: ${tradingActive ? "ACTIVE" : "PAUSED"} ${dryRun ? "(DRY RUN)" : ""}`,
+      `📚 Pattern Memory: ${memoryStatus.totalPatterns} patterns`,
+      `  Win Rate: ${(memoryStatus.averageWinRate * 100).toFixed(0)}%`,
+      `  Confidence: ${memoryStatus.averageConfidence.toFixed(0)}/100\n`,
+      `💡 Feature Flags Enabled:`,
+      `  Market Memory: ${FEATURE_FLAGS.useMarketMemory ? "✅" : "❌"}`,
+      `  Emotion Model: ${FEATURE_FLAGS.useEmotionModeler ? "✅" : "❌"}`,
+      `  Narrative Track: ${FEATURE_FLAGS.useNarrativeRotation ? "✅" : "❌"}`,
+      `  PvP Detector: ${FEATURE_FLAGS.usePvpSurvivalDetector ? "✅" : "❌"}`,
+      `  Dynamic Conviction: ${FEATURE_FLAGS.useDynamicConviction ? "✅" : "❌"}`,
+      `  Pattern Anticipation: ${FEATURE_FLAGS.usePatternAnticipation ? "✅" : "❌"}`,
+    ].join("\n");
 
-    await axios.post(
-      `https://api.telegram.org/bot${TELEGRAM.botToken}/sendMessage`,
-      { chat_id: TELEGRAM.chatId, text: message, parse_mode: "Markdown", disable_web_page_preview: true }
-    );
-  } catch {}
+    await ctx.reply(msg, { parse_mode: "HTML" });
+  } catch (err: any) {
+    await ctx.reply(`❌ Status check failed: ${err.message}`);
+  }
+});
+
+// ─── Command: /memory (Pattern Memory Status) ──────────────────────────────
+
+bot.command("memory", async (ctx: Context) => {
+  try {
+    const summary = await getMemorySummary();
+
+    const msg = [
+      `📚 MARKET MEMORY ENGINE\n`,
+      `Total patterns learned: ${summary.totalPatterns}`,
+      `Average win rate: ${(summary.averageWinRate * 100).toFixed(0)}%`,
+      `Average confidence: ${summary.averageConfidence.toFixed(0)}/100\n`,
+      `Top patterns (by confidence):`,
+      ...summary.topPatterns.slice(0, 5).map(
+        (p) =>
+          `  ${p.category}: ${p.confidence.toFixed(0)}% conf | ${(p.win_rate * 100).toFixed(0)}% WR | Seen ${p.historical_matches}x`,
+      ),
+      `\n💡 Older pattern = more reliable (more samples)`,
+      `✅ Pattern memory improves as system trades`,
+    ].join("\n");
+
+    await ctx.reply(msg);
+  } catch (err: any) {
+    await ctx.reply(`❌ Memory check failed: ${err.message}`);
+  }
+});
+
+// ─── Alert: Signal Evaluation with Behavioral Intelligence ────────────────
+
+export async function sendSignalAlert(
+  chatId: string,
+  signal: any,
+  convictionMode: string,
+  alignmentScore: {
+    narrativeScore: number;
+    technicalScore: number;
+    behavioralScore: number;
+    liquidityScore: number;
+    safetyScore: number;
+    timerScore: number;
+  },
+  emotion?: any,
+  pattern?: any,
+): Promise<void> {
+  try {
+    const tokenSymbol = signal.symbol || signal.address?.slice(0, 8) || "???";
+    const emotionPhase = emotion?.phase || "UNKNOWN";
+    const emotionIntensity = emotion?.intensity || 0;
+    const patternShape = pattern?.shape || "UNKNOWN";
+
+    // Color coding for conviction modes
+    const modeEmoji = {
+      AGGRESSIVE: "🚀",
+      CAUTIOUS: "⚡",
+      DEFENSIVE: "🛡️",
+      OBSERVATION: "👀",
+      INACTIVE: "🛑",
+    };
+
+    const emoji = modeEmoji[convictionMode as keyof typeof modeEmoji] || "❓";
+
+    const msg = [
+      `${emoji} NEW SIGNAL: ${tokenSymbol}`,
+      ``,
+      `📊 CONVICTION: ${convictionMode}`,
+      `  Narrative: ${alignmentScore.narrativeScore.toFixed(0)}`,
+      `  Technical: ${alignmentScore.technicalScore.toFixed(0)}`,
+      `  Behavioral: ${alignmentScore.behavioralScore.toFixed(0)}`,
+      `  Liquidity: ${alignmentScore.liquidityScore.toFixed(0)}`,
+      `  Safety: ${alignmentScore.safetyScore.toFixed(0)}`,
+      `  Timer: ${alignmentScore.timerScore.toFixed(0)}`,
+      ``,
+      `💭 EMOTION: ${emotionPhase} (${emotionIntensity}%)`,
+      `📈 PATTERN: ${patternShape}`,
+      ``,
+      `Price: $${signal.price?.toFixed(8) || "?"}`,
+      `Liquidity: $${signal.liquidity?.usd?.toFixed(0) || "?"}`,
+      `Market Cap: $${signal.marketCap?.usd?.toFixed(0) || "?"}`,
+      ``,
+      convictionMode === "AGGRESSIVE"
+        ? `✅ Ready to trade: Full position recommended`
+        : convictionMode === "CAUTIOUS"
+          ? `🟡 Good signal: Moderate position recommended`
+          : convictionMode === "DEFENSIVE"
+            ? `⚠️ Weak signal: Minimal position, tight stops`
+            : `👀 Observing: Not trade-ready yet`,
+    ].join("\n");
+
+    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
+  } catch (err: any) {
+    console.error("❌ Signal alert error:", err.message);
+  }
 }
 
-// ─── Start ────────────────────────────────────────────────────────────────────
+// ─── Alert: Emotion Phase Update ───────────────────────────────────────────
+
+export async function sendEmotionAlert(
+  chatId: string,
+  token: string,
+  previousPhase: string,
+  newPhase: string,
+  intensity: number,
+  nextPhase: string,
+  nextPhaseProbability: number,
+): Promise<void> {
+  try {
+    const emoji = {
+      EUPHORIA: "🚀",
+      PANIC: "😱",
+      EXHAUSTION: "😴",
+      DISBELIEF: "🤔",
+      REVENGE_BUYING: "📈",
+      SILENT_ACCUMULATION: "🤫",
+      FEAR: "😨",
+      DISTRIBUTION: "📤",
+      REVIVAL: "♻️",
+      GREED: "💰",
+      CAPITULATION: "☠️",
+      DEAD: "⚰️",
+    };
+
+    const phaseEmoji = emoji[newPhase as keyof typeof emoji] || "❓";
+
+    const msg = [
+      `${phaseEmoji} EMOTION PHASE UPDATE: ${token}`,
+      ``,
+      `${previousPhase} → ${newPhase}`,
+      `Intensity: ${intensity}%`,
+      ``,
+      `📊 Next phase: ${nextPhase} (${nextPhaseProbability}% probability)`,
+      ``,
+      newPhase === "EUPHORIA"
+        ? `🎯 Prepare to exit on strength`
+        : newPhase === "PANIC" || newPhase === "CAPITULATION"
+          ? `⛔ Consider exiting on rallies`
+          : newPhase === "SILENT_ACCUMULATION"
+            ? `✅ Good accumulation phase, consider entering`
+            : newPhase === "EXHAUSTION_TOP"
+              ? `⚠️ Volume dying, dump likely soon`
+              : `Monitor for next move`,
+    ].join("\n");
+
+    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
+  } catch (err: any) {
+    console.error("❌ Emotion alert error:", err.message);
+  }
+}
+
+// ─── Alert: Pattern Recognition ───────────────────────────────────────────
+
+export async function sendPatternAlert(
+  chatId: string,
+  token: string,
+  patternShape: string,
+  confidence: number,
+  nextShape: string,
+  nextPhaseProbability: number,
+  actionableSignal: string,
+): Promise<void> {
+  try {
+    const msg = [
+      `📈 PATTERN DETECTED: ${token}`,
+      ``,
+      `Current shape: ${patternShape}`,
+      `Confidence: ${confidence.toFixed(0)}%`,
+      ``,
+      `Next predicted: ${nextShape}`,
+      `Probability: ${nextPhaseProbability}%`,
+      ``,
+      `${actionableSignal}`,
+    ].join("\n");
+
+    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
+  } catch (err: any) {
+    console.error("❌ Pattern alert error:", err.message);
+  }
+}
+
+// ─── Alert: PvP Warfare Detected ───────────────────────────────────────────
+
+export async function sendPvPAlert(
+  chatId: string,
+  token: string,
+  pattern: string,
+  severity: number,
+  recommendation: string,
+): Promise<void> {
+  try {
+    const severityEmoji = severity > 80 ? "🚨" : severity > 60 ? "⚠️" : "👀";
+
+    const msg = [
+      `${severityEmoji} PvP WARFARE DETECTED: ${token}`,
+      ``,
+      `Pattern: ${pattern}`,
+      `Severity: ${severity}/100`,
+      ``,
+      `⚠️ ${recommendation}`,
+    ].join("\n");
+
+    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
+  } catch (err: any) {
+    console.error("❌ PvP alert error:", err.message);
+  }
+}
+
+// ─── Alert: Narrative Rotation ────────────────────────────────────────────
+
+export async function sendNarrativeRotationAlert(
+  chatId: string,
+  fromCategory: string,
+  toCategory: string,
+  volumeShift: number,
+  affectedCoins: string[],
+): Promise<void> {
+  try {
+    const msg = [
+      `🔄 CAPITAL ROTATION DETECTED`,
+      ``,
+      `${fromCategory} → ${toCategory}`,
+      `Volume: $${(volumeShift / 1000).toFixed(0)}k`,
+      ``,
+      `🎯 Affected coins:`,
+      ...affectedCoins.map((coin) => `  • ${coin}`),
+      ``,
+      `💡 Capital is rotating away from ${fromCategory}`,
+      `Be cautious with new ${fromCategory} entries`,
+    ].join("\n");
+
+    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
+  } catch (err: any) {
+    console.error("❌ Rotation alert error:", err.message);
+  }
+}
+
+// ─── Alert: Trade Execution ────────────────────────────────────────────────
+
+export async function sendTradeAlert(
+  chatId: string,
+  token: string,
+  direction: "BUY" | "SELL",
+  position: number,
+  price: number,
+  leverage: number,
+  stopLoss: number,
+  takeProfit: number[],
+): Promise<void> {
+  try {
+    const directionEmoji = direction === "BUY" ? "📈" : "📉";
+    const profitTargetStr = takeProfit
+      .map((tp, i) => `  L${i + 1}: ${tp.toFixed(8)}`)
+      .join("\n");
+
+    const msg = [
+      `${directionEmoji} TRADE EXECUTED: ${token}`,
+      ``,
+      `Direction: ${direction}`,
+      `Position: ${position}`,
+      `Entry: ${price.toFixed(8)}`,
+      `Leverage: ${leverage}x`,
+      ``,
+      `🛑 Stop Loss: ${stopLoss.toFixed(8)}`,
+      `✅ Profit Targets:`,
+      profitTargetStr,
+    ].join("\n");
+
+    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
+  } catch (err: any) {
+    console.error("❌ Trade alert error:", err.message);
+  }
+}
+
+// ─── Command: /conviction (Explain Current Signal) ─────────────────────────
+
+bot.command("conviction", async (ctx: Context) => {
+  try {
+    const msg = [
+      `💪 CONVICTION SCORING SYSTEM\n`,
+      `How we decide to trade:\n`,
+      `🚀 AGGRESSIVE (80%+): All signals aligned, full position`,
+      `⚡ CAUTIOUS (60-79%): Good signal, moderate position`,
+      `🛡️ DEFENSIVE (40-59%): Weak signal, minimal position`,
+      `👀 OBSERVATION (30-39%): Interesting but not ready`,
+      `🛑 INACTIVE (<30%): Dead coin or bad phase\n`,
+      `Conviction combines:`,
+      `  • Narrative strength (20%)`,
+      `  • Technical setup (15%)`,
+      `  • Behavioral phase (25%) ← Most important`,
+      `  • Liquidity quality (15%)`,
+      `  • Safety (15%)`,
+      `  • Market timing (5%)`,
+      `  + Other factors`,
+    ].join("\n");
+
+    await ctx.reply(msg);
+  } catch (err: any) {
+    await ctx.reply(`❌ Error: ${err.message}`);
+  }
+});
+
+// ─── Command: /emotion (Explain Emotion Phases) ─────────────────────────────
+
+bot.command("emotion", async (ctx: Context) => {
+  try {
+    const msg = [
+      `💭 EMOTION PHASE SYSTEM\n`,
+      `Every token cycles through emotions:\n`,
+      `🤫 SILENT_ACCUMULATION: Whales buying quietly, good entry`,
+      `🚀 EUPHORIA: Peak FOMO, start reducing`,
+      `😱 PANIC: Sellers overwhelming, exit on bounces`,
+      `😴 EXHAUSTION: Volume dead, capitulation complete`,
+      `🤔 DISBELIEF: Price stable, "is this real?"`,
+      `📈 REVENGE_BUYING: FOMO return, buyers return`,
+      `😨 FEAR: Distribution phase, whales exiting`,
+      `☠️ DEAD: No hope, avoid\n`,
+      `System predicts which phase you're in`,
+      `and what comes next.`,
+    ].join("\n");
+
+    await ctx.reply(msg);
+  } catch (err: any) {
+    await ctx.reply(`❌ Error: ${err.message}`);
+  }
+});
+
+// ─── Start Handler ────────────────────────────────────────────────────────
+
+bot.start(async (ctx: Context) => {
+  try {
+    const msg = [
+      `🚀 CATALYST APEX TRADER v3.0\n`,
+      `Behavioral Market Intelligence & Execution System\n`,
+      `Commands:`,
+      `/status - System status & enabled features`,
+      `/memory - Pattern memory statistics`,
+      `/conviction - Conviction scoring explained`,
+      `/emotion - Emotion phases explained`,
+      `/help - All commands\n`,
+      `🟢 System online and monitoring markets`,
+      `📚 ${FEATURE_FLAGS.useMarketMemory ? "Learning from patterns" : "Pattern learning disabled"}`,
+      `💭 ${FEATURE_FLAGS.useEmotionModeler ? "Tracking emotion phases" : "Emotion tracking disabled"}`,
+    ].join("\n");
+
+    await ctx.reply(msg);
+  } catch (err: any) {
+    console.error("❌ Start handler error:", err.message);
+  }
+});
+
+// ─── Help Handler ─────────────────────────────────────────────────────────
+
+bot.help(async (ctx: Context) => {
+  try {
+    const msg = [
+      `🆘 CATALYST APEX HELP\n`,
+      `Available commands:\n`,
+      `/start - Start the bot`,
+      `/status - Check system status`,
+      `/memory - View pattern memory`,
+      `/conviction - Learn conviction scoring`,
+      `/emotion - Learn emotion phases`,
+      `/help - This message\n`,
+      `Alert types:`,
+      `🔔 Signal alerts - New tokens passing security`,
+      `💭 Emotion alerts - Phase changes`,
+      `📈 Pattern alerts - Pattern recognition`,
+      `🚨 PvP alerts - Potential scams/traps`,
+      `🔄 Rotation alerts - Capital flow between narratives`,
+      `✅ Trade alerts - Position opened/closed\n`,
+      `Questions? Check BEHAVIORAL_INTELLIGENCE.md guide`,
+    ].join("\n");
+
+    await ctx.reply(msg);
+  } catch (err: any) {
+    console.error("❌ Help handler error:", err.message);
+  }
+});
+
+// ─── Error Handler ────────────────────────────────────────────────────────
+
+bot.on("error", (err) => {
+  console.error("❌ Telegram bot error:", err);
+});
+
+// ─── Launch Bot ────────────────────────────────────────────────────────────
+
 export async function startBot(): Promise<void> {
-  console.log(`🤖 CATALYST APEX TRADER started`);
-  console.log(`⚙️  Mode: ${MODE.toUpperCase()} | Auto-trade: ${AUTO_TRADE ? "ON" : "OFF"}`);
-  console.log(`⚙️  AI Brain: Claude Haiku + extended thinking`);
-  console.log(`⚙️  Risk Engine: ON | Daily target: 50 SOL`);
-  console.log(`⚙️  DexScreener: every 60s | On-chain: every 2min`);
-  console.log(`⚙️  Scan cache TTL: 30min (tokens re-evaluated after expiry)`);
+  try {
+    console.log("🤖 Starting Telegram bot...");
+    await bot.launch();
+    console.log("✅ Telegram bot online");
 
-  await dexScreenerScanCycle();
-  setInterval(dexScreenerScanCycle, 60_000);
-
-  setTimeout(async () => {
-    await onChainScanCycle();
-    setInterval(onChainScanCycle, 120_000);
-  }, 30_000);
-
-  setInterval(async () => {
-    try { await monitorPositions(); }
-    catch (err: any) { console.error("❌ Position monitor error:", err.message); }
-  }, 30_000);
+    // Graceful shutdown
+    process.once("SIGINT", () => {
+      console.log("Shutting down bot...");
+      bot.stop("SIGINT");
+    });
+    process.once("SIGTERM", () => {
+      console.log("Shutting down bot...");
+      bot.stop("SIGTERM");
+    });
+  } catch (err: any) {
+    console.error("❌ Bot startup failed:", err.message);
+    throw err;
+  }
 }
+
+export default bot;

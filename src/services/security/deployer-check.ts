@@ -1,10 +1,10 @@
 // src/services/security/deployer-check.ts
 // Catalyst Apex Trader v2.1 — Deployer History Tracker
-// Profiles deployers on first sight via Helius and blocks known ruggists.
+// FIX: Uses correct Helius Enhanced Transactions API (not deprecated v0 endpoint).
 
-import axios from "axios";
+import axios    from "axios";
 import { supabase } from "../../db/supabase";
-import { HELIUS } from "../../core/config";
+import { HELIUS }   from "../../core/config";
 
 export interface DeployerCheckResult {
   reject:    boolean;
@@ -26,6 +26,7 @@ interface DeployerProfile {
 }
 
 // ─── Risk score calculator ────────────────────────────────────────────────────
+
 function calculateRiskScore(profile: Partial<DeployerProfile>): number {
   let score = 0;
 
@@ -36,7 +37,7 @@ function calculateRiskScore(profile: Partial<DeployerProfile>): number {
 
   score += rugRate * 50;
 
-  if (tokensCreated >= 20)     score += 20;
+  if (tokensCreated >= 20)      score += 20;
   else if (tokensCreated >= 10) score += 12;
   else if (tokensCreated >= 5)  score += 6;
 
@@ -51,23 +52,50 @@ function calculateRiskScore(profile: Partial<DeployerProfile>): number {
   return Math.min(100, Math.round(score));
 }
 
-// ─── Helius deployer profiling ────────────────────────────────────────────────
+// ─── Helius deployer profiling — FIXED endpoint ───────────────────────────────
+
 async function profileDeployerFromChain(deployerAddress: string): Promise<Partial<DeployerProfile>> {
   try {
-    const res = await axios.get(
-      `https://api.helius.xyz/v0/addresses/${deployerAddress}/transactions`,
+    // Step 1: Get signatures via Helius RPC (correct endpoint)
+    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
+    const sigRes = await axios.post(
+      rpcUrl,
       {
-        params:  { "api-key": HELIUS.apiKey, limit: 100, type: "CREATE" },
-        timeout: 8000,
-      }
+        jsonrpc: "2.0",
+        id:      1,
+        method:  "getSignaturesForAddress",
+        params:  [deployerAddress, { limit: 100 }],
+      },
+      { timeout: 10000 }
     );
 
-    const txs: any[] = res.data ?? [];
-    const tokensCreated = txs.length;
+    const signatures: string[] = (sigRes.data?.result ?? []).map((s: any) => s.signature);
+
+    if (signatures.length === 0) {
+      return { tokens_created: 0, avg_lifespan: 24, rug_rate: 0, pattern: "unknown", victims: 0, last_active: Math.floor(Date.now() / 1000) };
+    }
+
+    // Step 2: Parse a sample via Enhanced API to look for CREATE patterns
+    const batchSize = Math.min(signatures.length, 25);
+    const txRes = await axios.post(
+      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.apiKey}`,
+      { transactions: signatures.slice(0, batchSize) },
+      { timeout: 12000 }
+    );
+
+    const txs: any[]    = txRes.data ?? [];
+    const tokensCreated = txs.filter((tx: any) =>
+      (tx.type === "CREATE" || tx.description?.toLowerCase().includes("create"))
+    ).length;
+
+    // Estimate avg lifespan from timestamp gaps between create events
+    const timestamps = txs
+      .filter((tx: any) => tx.timestamp)
+      .map((tx: any) => tx.timestamp as number)
+      .sort((a, b) => b - a);
 
     let avgLifespan = 24;
-    if (tokensCreated >= 3) {
-      const timestamps = txs.map((t: any) => t.timestamp as number).sort((a, b) => b - a);
+    if (timestamps.length >= 3) {
       const gaps: number[] = [];
       for (let i = 0; i < timestamps.length - 1; i++) {
         gaps.push((timestamps[i] - timestamps[i + 1]) / 3600);
@@ -76,13 +104,13 @@ async function profileDeployerFromChain(deployerAddress: string): Promise<Partia
       if (avgGap < 2) avgLifespan = avgGap;
     }
 
-    const last48h       = Date.now() / 1000 - 48 * 3600;
-    const recentTokens  = txs.filter((t: any) => t.timestamp >= last48h).length;
+    const last48h      = Date.now() / 1000 - 48 * 3600;
+    const recentTokens = txs.filter((tx: any) => tx.timestamp >= last48h).length;
 
     const pattern =
-      recentTokens >= 5                                  ? "insta-dump"      :
-      tokensCreated >= 10 && avgLifespan < 6             ? "serial-rugger"   :
-      tokensCreated >= 3                                 ? "repeat-deployer" :
+      recentTokens >= 5                                 ? "insta-dump"      :
+      tokensCreated >= 10 && avgLifespan < 6            ? "serial-rugger"   :
+      tokensCreated >= 3                                ? "repeat-deployer" :
       "unknown";
 
     const rugRate =
@@ -99,7 +127,6 @@ async function profileDeployerFromChain(deployerAddress: string): Promise<Partia
       victims:        0,
       last_active:    Math.floor(Date.now() / 1000),
     };
-
   } catch (err: any) {
     console.warn(`⚠️ Could not profile deployer ${deployerAddress}:`, err.message);
     return {
@@ -114,11 +141,13 @@ async function profileDeployerFromChain(deployerAddress: string): Promise<Partia
 }
 
 // ─── Rejection thresholds ─────────────────────────────────────────────────────
+
 const REJECT_RUG_RATE   = 0.5;
 const REJECT_RISK_SCORE = 70;
 const REJECT_PATTERNS   = ["insta-dump", "honeypot", "serial-rugger"];
 
 // ─── Main export ──────────────────────────────────────────────────────────────
+
 export async function checkDeployer(deployerAddress: string): Promise<DeployerCheckResult> {
   try {
     console.log(`👤 Deployer check: ${deployerAddress}`);
