@@ -1,460 +1,587 @@
-// src/services/telegram/bot-updated.ts
-// Catalyst Apex Trader v3.0 — Telegram Bot
-//
-// Updated with:
-// - Behavioral intelligence module calls
-// - Conviction-based alert formatting
-// - Market regime awareness
-// - Emotion phase tracking
-// - Pattern anticipation alerts
-//
-// This replaces the existing bot.ts
-// Keep all existing logic, ADD these enhancements
+/**
+ * TELEGRAM BOT - UPDATED WITH WALLET COMMANDS
+ * Core Telegram interface for Catalyst Apex Trader
+ * Includes wallet management, status, alerts, and trading control
+ */
 
-import { Context, Telegraf } from "telegraf";
-import { FEATURE_FLAGS, CONVICTION_THRESHOLDS } from "../../core/config";
-import { getMemorySummary, findSimilarPatterns } from "../intelligence/market-memory-engine";
-import { getEmotionHistory, recordEmotionSnapshot } from "../intelligence/emotion-modeler";
-import { getNarrativeTrend } from "../intelligence/narrative-rotation-tracker";
-import { calculateConvictionMode } from "../intelligence/conviction-scaler";
-import { identifyPatternShape } from "../intelligence/pattern-anticipation-engine";
+import TelegramBot from 'node-telegram-bot-api';
+import { supabase } from '../core/supabase';
+import { walletManager } from '../wallet/wallet-manager';
+import { registerWalletCommands } from './wallet-commands';
 
-// ─── Initialize Bot ────────────────────────────────────────────────────────
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN!);
+if (!TELEGRAM_TOKEN) {
+  throw new Error('TELEGRAM_BOT_TOKEN not set in environment');
+}
 
-// ─── Command: /status (System Status) ──────────────────────────────────────
+export const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-bot.command("status", async (ctx: Context) => {
+/**
+ * Bot initialization
+ */
+export async function initializeBot(): Promise<void> {
+  console.log('[Bot] Initializing Telegram bot...');
+
   try {
-    const memoryStatus = await getMemorySummary();
-    const tradingActive = process.env.TRADING_ACTIVE === "true";
-    const dryRun = process.env.DRY_RUN === "true";
+    // Initialize wallet manager
+    await walletManager.initialize();
+    console.log('[Bot] Wallet manager initialized');
 
-    const msg = [
-      `⚙️ CATALYST APEX STATUS\n`,
-      `🚀 Trading: ${tradingActive ? "ACTIVE" : "PAUSED"} ${dryRun ? "(DRY RUN)" : ""}`,
-      `📚 Pattern Memory: ${memoryStatus.totalPatterns} patterns`,
-      `  Win Rate: ${(memoryStatus.averageWinRate * 100).toFixed(0)}%`,
-      `  Confidence: ${memoryStatus.averageConfidence.toFixed(0)}/100\n`,
-      `💡 Feature Flags Enabled:`,
-      `  Market Memory: ${FEATURE_FLAGS.useMarketMemory ? "✅" : "❌"}`,
-      `  Emotion Model: ${FEATURE_FLAGS.useEmotionModeler ? "✅" : "❌"}`,
-      `  Narrative Track: ${FEATURE_FLAGS.useNarrativeRotation ? "✅" : "❌"}`,
-      `  PvP Detector: ${FEATURE_FLAGS.usePvpSurvivalDetector ? "✅" : "❌"}`,
-      `  Dynamic Conviction: ${FEATURE_FLAGS.useDynamicConviction ? "✅" : "❌"}`,
-      `  Pattern Anticipation: ${FEATURE_FLAGS.usePatternAnticipation ? "✅" : "❌"}`,
-    ].join("\n");
+    // Register all wallet commands
+    registerWalletCommands();
+    console.log('[Bot] Wallet commands registered');
 
-    await ctx.reply(msg, { parse_mode: "HTML" });
-  } catch (err: any) {
-    await ctx.reply(`❌ Status check failed: ${err.message}`);
-  }
-});
+    // Register core commands
+    registerCoreCommands();
+    console.log('[Bot] Core commands registered');
 
-// ─── Command: /memory (Pattern Memory Status) ──────────────────────────────
+    // Setup error handlers
+    setupErrorHandlers();
 
-bot.command("memory", async (ctx: Context) => {
-  try {
-    const summary = await getMemorySummary();
+    // Send startup notification
+    const adminChatId = process.env.TELEGRAM_ADMIN_ID;
+    if (adminChatId) {
+      bot.sendMessage(
+        adminChatId,
+        '✅ **Catalyst Apex Trader Online**\n\n🧠 Behavioral Intelligence System\n📊 Multi-Wallet Isolation\n🎯 Ready to Trade',
+        { parse_mode: 'Markdown' }
+      ).catch(err => console.error('[Bot] Failed to send startup message:', err));
+    }
 
-    const msg = [
-      `📚 MARKET MEMORY ENGINE\n`,
-      `Total patterns learned: ${summary.totalPatterns}`,
-      `Average win rate: ${(summary.averageWinRate * 100).toFixed(0)}%`,
-      `Average confidence: ${summary.averageConfidence.toFixed(0)}/100\n`,
-      `Top patterns (by confidence):`,
-      ...summary.topPatterns.slice(0, 5).map(
-        (p) =>
-          `  ${p.category}: ${p.confidence.toFixed(0)}% conf | ${(p.win_rate * 100).toFixed(0)}% WR | Seen ${p.historical_matches}x`,
-      ),
-      `\n💡 Older pattern = more reliable (more samples)`,
-      `✅ Pattern memory improves as system trades`,
-    ].join("\n");
-
-    await ctx.reply(msg);
-  } catch (err: any) {
-    await ctx.reply(`❌ Memory check failed: ${err.message}`);
-  }
-});
-
-// ─── Alert: Signal Evaluation with Behavioral Intelligence ────────────────
-
-export async function sendSignalAlert(
-  chatId: string,
-  signal: any,
-  convictionMode: string,
-  alignmentScore: {
-    narrativeScore: number;
-    technicalScore: number;
-    behavioralScore: number;
-    liquidityScore: number;
-    safetyScore: number;
-    timerScore: number;
-  },
-  emotion?: any,
-  pattern?: any,
-): Promise<void> {
-  try {
-    const tokenSymbol = signal.symbol || signal.address?.slice(0, 8) || "???";
-    const emotionPhase = emotion?.phase || "UNKNOWN";
-    const emotionIntensity = emotion?.intensity || 0;
-    const patternShape = pattern?.shape || "UNKNOWN";
-
-    // Color coding for conviction modes
-    const modeEmoji = {
-      AGGRESSIVE: "🚀",
-      CAUTIOUS: "⚡",
-      DEFENSIVE: "🛡️",
-      OBSERVATION: "👀",
-      INACTIVE: "🛑",
-    };
-
-    const emoji = modeEmoji[convictionMode as keyof typeof modeEmoji] || "❓";
-
-    const msg = [
-      `${emoji} NEW SIGNAL: ${tokenSymbol}`,
-      ``,
-      `📊 CONVICTION: ${convictionMode}`,
-      `  Narrative: ${alignmentScore.narrativeScore.toFixed(0)}`,
-      `  Technical: ${alignmentScore.technicalScore.toFixed(0)}`,
-      `  Behavioral: ${alignmentScore.behavioralScore.toFixed(0)}`,
-      `  Liquidity: ${alignmentScore.liquidityScore.toFixed(0)}`,
-      `  Safety: ${alignmentScore.safetyScore.toFixed(0)}`,
-      `  Timer: ${alignmentScore.timerScore.toFixed(0)}`,
-      ``,
-      `💭 EMOTION: ${emotionPhase} (${emotionIntensity}%)`,
-      `📈 PATTERN: ${patternShape}`,
-      ``,
-      `Price: $${signal.price?.toFixed(8) || "?"}`,
-      `Liquidity: $${signal.liquidity?.usd?.toFixed(0) || "?"}`,
-      `Market Cap: $${signal.marketCap?.usd?.toFixed(0) || "?"}`,
-      ``,
-      convictionMode === "AGGRESSIVE"
-        ? `✅ Ready to trade: Full position recommended`
-        : convictionMode === "CAUTIOUS"
-          ? `🟡 Good signal: Moderate position recommended`
-          : convictionMode === "DEFENSIVE"
-            ? `⚠️ Weak signal: Minimal position, tight stops`
-            : `👀 Observing: Not trade-ready yet`,
-    ].join("\n");
-
-    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
-  } catch (err: any) {
-    console.error("❌ Signal alert error:", err.message);
+    console.log('[Bot] Initialization complete');
+  } catch (error) {
+    console.error('[Bot] Initialization failed:', error);
+    throw error;
   }
 }
 
-// ─── Alert: Emotion Phase Update ───────────────────────────────────────────
+/**
+ * Register core bot commands
+ */
+function registerCoreCommands(): void {
+  // /start - Welcome message
+  bot.onText(/^\/start$/, (msg: any) => {
+    const chatId = msg.chat.id;
+    const message = `
+🤖 **CATALYST APEX TRADER**
+━━━━━━━━━━━━━━━━━━━━━━━
+Behavioral Market Intelligence & Execution System
 
-export async function sendEmotionAlert(
-  chatId: string,
-  token: string,
-  previousPhase: string,
-  newPhase: string,
-  intensity: number,
-  nextPhase: string,
-  nextPhaseProbability: number,
-): Promise<void> {
+📋 **WALLET COMMANDS**
+/wallet          - Show active wallet
+/wallets         - List all wallets
+/add_wallet      - Add new wallet
+/select_wallet   - Switch active wallet
+/tag_wallet      - Retag wallet
+/strategy        - Change strategy
+
+📊 **STATUS COMMANDS**
+/status          - System status
+/conviction      - Current conviction score
+/emotion         - Market emotion state
+/memory          - Top learned patterns
+
+⚙️ **CONTROL COMMANDS**
+/pause           - Pause trading
+/resume          - Resume trading
+/risk            - Show risk profile
+/positions       - Open positions
+
+ℹ️ Use /help for detailed command info
+    `.trim();
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  });
+
+  // /help - Help menu
+  bot.onText(/^\/help$/, (msg: any) => {
+    const chatId = msg.chat.id;
+    const message = `
+📚 **COMMAND HELP**
+━━━━━━━━━━━━━━━━━━━
+
+**Wallet Management:**
+/wallet              Show active wallet info + PnL
+/wallets             List all wallets with stats
+/add_wallet <addr> <strategy> <tag>
+  Add new wallet. Strategies: conservative, aggressive, experimental
+  Tags: smart_money, influencer, experimental, blacklist, custom
+/select_wallet <addr>
+  Switch to different wallet
+/tag_wallet <addr> <tag>
+  Change wallet tag
+/strategy <addr> <new_strategy>
+  Override wallet strategy
+
+**System Status:**
+/status              System health + active wallet
+/conviction <token>  Signal strength for token
+/emotion             Market psychological state
+/memory              Top performing patterns
+
+**Position Control:**
+/positions           Show open positions
+/close <token>       Close position in token
+/risk                Display risk profile limits
+
+**Trading Control:**
+/pause               Pause all trading
+/resume              Resume trading
+/market              Market regime status
+
+💡 All commands require active wallet (see /wallet)
+💡 Use /select_wallet to change context
+    `.trim();
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  });
+
+  // /status - System status
+  bot.onText(/^\/status$/, (msg: any) => {
+    handleStatusCommand(msg);
+  });
+
+  // /conviction - Current conviction
+  bot.onText(/^\/conviction(?:\s+(.+))?$/, (msg: any, match: any) => {
+    const token = match?.[1] || 'SYSTEM';
+    handleConvictionCommand(msg, token);
+  });
+
+  // /emotion - Market emotion
+  bot.onText(/^\/emotion$/, (msg: any) => {
+    handleEmotionCommand(msg);
+  });
+
+  // /memory - Market memory patterns
+  bot.onText(/^\/memory$/, (msg: any) => {
+    handleMemoryCommand(msg);
+  });
+
+  // /positions - Show positions
+  bot.onText(/^\/positions$/, (msg: any) => {
+    handlePositionsCommand(msg);
+  });
+
+  // /pause - Pause trading
+  bot.onText(/^\/pause$/, (msg: any) => {
+    handlePauseCommand(msg);
+  });
+
+  // /resume - Resume trading
+  bot.onText(/^\/resume$/, (msg: any) => {
+    handleResumeCommand(msg);
+  });
+
+  // /risk - Risk profile
+  bot.onText(/^\/risk$/, (msg: any) => {
+    handleRiskCommand(msg);
+  });
+
+  // /market - Market regime
+  bot.onText(/^\/market$/, (msg: any) => {
+    handleMarketCommand(msg);
+  });
+}
+
+/**
+ * /status - System status
+ */
+async function handleStatusCommand(msg: any): Promise<void> {
+  const chatId = msg.chat.id;
+
   try {
-    const emoji = {
-      EUPHORIA: "🚀",
-      PANIC: "😱",
-      EXHAUSTION: "😴",
-      DISBELIEF: "🤔",
-      REVENGE_BUYING: "📈",
-      SILENT_ACCUMULATION: "🤫",
-      FEAR: "😨",
-      DISTRIBUTION: "📤",
-      REVIVAL: "♻️",
-      GREED: "💰",
-      CAPITULATION: "☠️",
-      DEAD: "⚰️",
-    };
+    const context = await walletManager.getActiveWalletContext();
 
-    const phaseEmoji = emoji[newPhase as keyof typeof emoji] || "❓";
+    if (!context) {
+      return bot.sendMessage(
+        chatId,
+        '⚠️ No active wallet. Use /add_wallet to create one.'
+      );
+    }
 
-    const msg = [
-      `${phaseEmoji} EMOTION PHASE UPDATE: ${token}`,
-      ``,
-      `${previousPhase} → ${newPhase}`,
-      `Intensity: ${intensity}%`,
-      ``,
-      `📊 Next phase: ${nextPhase} (${nextPhaseProbability}% probability)`,
-      ``,
-      newPhase === "EUPHORIA"
-        ? `🎯 Prepare to exit on strength`
-        : newPhase === "PANIC" || newPhase === "CAPITULATION"
-          ? `⛔ Consider exiting on rallies`
-          : newPhase === "SILENT_ACCUMULATION"
-            ? `✅ Good accumulation phase, consider entering`
-            : newPhase === "EXHAUSTION_TOP"
-              ? `⚠️ Volume dying, dump likely soon`
-              : `Monitor for next move`,
-    ].join("\n");
+    const uptime = process.uptime();
+    const uptimeHours = Math.floor(uptime / 3600);
+    const uptimeMinutes = Math.floor((uptime % 3600) / 60);
 
-    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
-  } catch (err: any) {
-    console.error("❌ Emotion alert error:", err.message);
+    const message = `
+🟢 **SYSTEM STATUS**
+━━━━━━━━━━━━━━━━━━━
+Uptime: ${uptimeHours}h ${uptimeMinutes}m
+Mode: ${context.wallet.strategy.toUpperCase()}
+
+📊 **ACTIVE WALLET**
+Address: \`${context.wallet.address}\`
+Tag: ${context.wallet.tag.toUpperCase()}
+
+📈 **PERFORMANCE**
+Trades: ${context.total_trades}
+Win Rate: ${(context.win_rate * 100).toFixed(1)}%
+PnL: $${context.pnl_usd.toFixed(2)}
+
+🔧 **POSITIONS**
+Open: ${context.current_positions}/${context.max_positions}
+Max Leverage: ${context.max_leverage}x
+
+✅ System operational
+    `.trim();
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Error in /status:', error);
+    bot.sendMessage(chatId, '❌ Failed to fetch status');
   }
 }
 
-// ─── Alert: Pattern Recognition ───────────────────────────────────────────
+/**
+ * /conviction - Current conviction score
+ */
+async function handleConvictionCommand(msg: any, token: string): Promise<void> {
+  const chatId = msg.chat.id;
 
-export async function sendPatternAlert(
-  chatId: string,
-  token: string,
-  patternShape: string,
-  confidence: number,
-  nextShape: string,
-  nextPhaseProbability: number,
-  actionableSignal: string,
-): Promise<void> {
   try {
-    const msg = [
-      `📈 PATTERN DETECTED: ${token}`,
-      ``,
-      `Current shape: ${patternShape}`,
-      `Confidence: ${confidence.toFixed(0)}%`,
-      ``,
-      `Next predicted: ${nextShape}`,
-      `Probability: ${nextPhaseProbability}%`,
-      ``,
-      `${actionableSignal}`,
-    ].join("\n");
+    const activeWalletId = walletManager.getActiveWalletId();
+    if (!activeWalletId) {
+      return bot.sendMessage(chatId, '⚠️ No active wallet');
+    }
 
-    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
-  } catch (err: any) {
-    console.error("❌ Pattern alert error:", err.message);
+    const { data, error } = await supabase
+      .from('conviction_logs')
+      .select('*')
+      .eq('wallet_id', activeWalletId)
+      .eq('token', token)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error || !data) {
+      return bot.sendMessage(chatId, `ℹ️ No conviction data for ${token}`);
+    }
+
+    const message = `
+📊 **CONVICTION SCORE: ${token}**
+━━━━━━━━━━━━━━━━━━━━━━━
+Overall: **${data.conviction_score}** / 100
+
+Signal Breakdown:
+├─ Smart Money: ${data.smart_money_signal}
+├─ Narrative Vitality: ${data.narrative_vitality}
+├─ Holder Behavior: ${data.holder_behavior}
+├─ Regime: ${data.regime_condition}
+└─ Market Memory: ${data.market_memory_match}
+
+Decision: **${data.final_decision}**
+Confidence: ${getConfidenceLabel(data.conviction_score)}
+    `.trim();
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Error in /conviction:', error);
+    bot.sendMessage(chatId, '❌ Failed to fetch conviction');
   }
 }
 
-// ─── Alert: PvP Warfare Detected ───────────────────────────────────────────
+/**
+ * /emotion - Market emotion state
+ */
+async function handleEmotionCommand(msg: any): Promise<void> {
+  const chatId = msg.chat.id;
 
-export async function sendPvPAlert(
-  chatId: string,
-  token: string,
-  pattern: string,
-  severity: number,
-  recommendation: string,
-): Promise<void> {
   try {
-    const severityEmoji = severity > 80 ? "🚨" : severity > 60 ? "⚠️" : "👀";
+    const activeWalletId = walletManager.getActiveWalletId();
+    if (!activeWalletId) {
+      return bot.sendMessage(chatId, '⚠️ No active wallet');
+    }
 
-    const msg = [
-      `${severityEmoji} PvP WARFARE DETECTED: ${token}`,
-      ``,
-      `Pattern: ${pattern}`,
-      `Severity: ${severity}/100`,
-      ``,
-      `⚠️ ${recommendation}`,
-    ].join("\n");
+    const { data, error } = await supabase
+      .from('emotion_snapshots')
+      .select('*')
+      .eq('wallet_id', activeWalletId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
 
-    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
-  } catch (err: any) {
-    console.error("❌ PvP alert error:", err.message);
+    if (error || !data) {
+      return bot.sendMessage(chatId, 'ℹ️ No emotion data yet');
+    }
+
+    const emotionPhase = data.emotion_phase || 'UNKNOWN';
+    const emotionEmoji = getEmotionEmoji(emotionPhase);
+
+    const message = `
+${emotionEmoji} **MARKET EMOTION STATE**
+━━━━━━━━━━━━━━━━━━━━━━━
+Phase: **${emotionPhase}**
+
+Sentiment: ${data.sentiment_score}%
+Volatility: ${data.volatility_level}
+Greed Index: ${data.greed_index}
+
+Updated: ${new Date(data.created_at).toLocaleTimeString()}
+    `.trim();
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Error in /emotion:', error);
+    bot.sendMessage(chatId, '❌ Failed to fetch emotion state');
   }
 }
 
-// ─── Alert: Narrative Rotation ────────────────────────────────────────────
+/**
+ * /memory - Market memory patterns
+ */
+async function handleMemoryCommand(msg: any): Promise<void> {
+  const chatId = msg.chat.id;
 
-export async function sendNarrativeRotationAlert(
-  chatId: string,
-  fromCategory: string,
-  toCategory: string,
-  volumeShift: number,
-  affectedCoins: string[],
-): Promise<void> {
   try {
-    const msg = [
-      `🔄 CAPITAL ROTATION DETECTED`,
-      ``,
-      `${fromCategory} → ${toCategory}`,
-      `Volume: $${(volumeShift / 1000).toFixed(0)}k`,
-      ``,
-      `🎯 Affected coins:`,
-      ...affectedCoins.map((coin) => `  • ${coin}`),
-      ``,
-      `💡 Capital is rotating away from ${fromCategory}`,
-      `Be cautious with new ${fromCategory} entries`,
-    ].join("\n");
+    const activeWalletId = walletManager.getActiveWalletId();
+    if (!activeWalletId) {
+      return bot.sendMessage(chatId, '⚠️ No active wallet');
+    }
 
-    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
-  } catch (err: any) {
-    console.error("❌ Rotation alert error:", err.message);
+    const { data, error } = await supabase
+      .from('market_memory')
+      .select('*')
+      .eq('wallet_id', activeWalletId)
+      .order('confidence_score', { ascending: false })
+      .limit(5);
+
+    if (error || !data || data.length === 0) {
+      return bot.sendMessage(chatId, 'ℹ️ No patterns learned yet');
+    }
+
+    let message = '🧠 **TOP LEARNED PATTERNS**\n━━━━━━━━━━━━━━━━━━━\n';
+
+    for (const pattern of data) {
+      message += `
+**${pattern.pattern_name}**
+Win Rate: ${(pattern.win_rate * 100).toFixed(1)}% | Confidence: ${(pattern.confidence_score * 100).toFixed(0)}%
+Occurrences: ${pattern.occurrences} | Avg Return: ${pattern.avg_return_percent.toFixed(2)}%
+
+`;
+    }
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Error in /memory:', error);
+    bot.sendMessage(chatId, '❌ Failed to fetch patterns');
   }
 }
 
-// ─── Alert: Trade Execution ────────────────────────────────────────────────
+/**
+ * /positions - Show open positions
+ */
+async function handlePositionsCommand(msg: any): Promise<void> {
+  const chatId = msg.chat.id;
 
-export async function sendTradeAlert(
-  chatId: string,
-  token: string,
-  direction: "BUY" | "SELL",
-  position: number,
-  price: number,
-  leverage: number,
-  stopLoss: number,
-  takeProfit: number[],
-): Promise<void> {
   try {
-    const directionEmoji = direction === "BUY" ? "📈" : "📉";
-    const profitTargetStr = takeProfit
-      .map((tp, i) => `  L${i + 1}: ${tp.toFixed(8)}`)
-      .join("\n");
+    const activeWalletId = walletManager.getActiveWalletId();
+    if (!activeWalletId) {
+      return bot.sendMessage(chatId, '⚠️ No active wallet');
+    }
 
-    const msg = [
-      `${directionEmoji} TRADE EXECUTED: ${token}`,
-      ``,
-      `Direction: ${direction}`,
-      `Position: ${position}`,
-      `Entry: ${price.toFixed(8)}`,
-      `Leverage: ${leverage}x`,
-      ``,
-      `🛑 Stop Loss: ${stopLoss.toFixed(8)}`,
-      `✅ Profit Targets:`,
-      profitTargetStr,
-    ].join("\n");
+    const { data, error } = await supabase
+      .from('trade_intelligence')
+      .select('*')
+      .eq('wallet_id', activeWalletId)
+      .eq('status', 'open');
 
-    await bot.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
-  } catch (err: any) {
-    console.error("❌ Trade alert error:", err.message);
+    if (error || !data || data.length === 0) {
+      return bot.sendMessage(chatId, 'ℹ️ No open positions');
+    }
+
+    let message = `📈 **OPEN POSITIONS** (${data.length})\n━━━━━━━━━━━━━━━━━━━\n`;
+
+    let totalExposure = 0;
+    for (const trade of data) {
+      const exposure = trade.position_size * trade.entry_price;
+      totalExposure += exposure;
+
+      message += `
+**${trade.token}**
+Entry: $${trade.entry_price.toFixed(4)}
+Size: ${trade.position_size.toFixed(4)}
+Leverage: ${trade.leverage}x
+Exposure: $${exposure.toFixed(2)}
+
+`;
+    }
+
+    message += `**Total Exposure: $${totalExposure.toFixed(2)}**`;
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Error in /positions:', error);
+    bot.sendMessage(chatId, '❌ Failed to fetch positions');
   }
 }
 
-// ─── Command: /conviction (Explain Current Signal) ─────────────────────────
+/**
+ * /pause - Pause trading
+ */
+async function handlePauseCommand(msg: any): Promise<void> {
+  const chatId = msg.chat.id;
 
-bot.command("conviction", async (ctx: Context) => {
   try {
-    const msg = [
-      `💪 CONVICTION SCORING SYSTEM\n`,
-      `How we decide to trade:\n`,
-      `🚀 AGGRESSIVE (80%+): All signals aligned, full position`,
-      `⚡ CAUTIOUS (60-79%): Good signal, moderate position`,
-      `🛡️ DEFENSIVE (40-59%): Weak signal, minimal position`,
-      `👀 OBSERVATION (30-39%): Interesting but not ready`,
-      `🛑 INACTIVE (<30%): Dead coin or bad phase\n`,
-      `Conviction combines:`,
-      `  • Narrative strength (20%)`,
-      `  • Technical setup (15%)`,
-      `  • Behavioral phase (25%) ← Most important`,
-      `  • Liquidity quality (15%)`,
-      `  • Safety (15%)`,
-      `  • Market timing (5%)`,
-      `  + Other factors`,
-    ].join("\n");
+    await supabase
+      .from('bot_config')
+      .update({ trading_paused: true })
+      .eq('id', 1);
 
-    await ctx.reply(msg);
-  } catch (err: any) {
-    await ctx.reply(`❌ Error: ${err.message}`);
+    bot.sendMessage(chatId, '⏸️ Trading paused');
+  } catch (error) {
+    console.error('[Bot] Error in /pause:', error);
+    bot.sendMessage(chatId, '❌ Failed to pause trading');
   }
-});
+}
 
-// ─── Command: /emotion (Explain Emotion Phases) ─────────────────────────────
+/**
+ * /resume - Resume trading
+ */
+async function handleResumeCommand(msg: any): Promise<void> {
+  const chatId = msg.chat.id;
 
-bot.command("emotion", async (ctx: Context) => {
   try {
-    const msg = [
-      `💭 EMOTION PHASE SYSTEM\n`,
-      `Every token cycles through emotions:\n`,
-      `🤫 SILENT_ACCUMULATION: Whales buying quietly, good entry`,
-      `🚀 EUPHORIA: Peak FOMO, start reducing`,
-      `😱 PANIC: Sellers overwhelming, exit on bounces`,
-      `😴 EXHAUSTION: Volume dead, capitulation complete`,
-      `🤔 DISBELIEF: Price stable, "is this real?"`,
-      `📈 REVENGE_BUYING: FOMO return, buyers return`,
-      `😨 FEAR: Distribution phase, whales exiting`,
-      `☠️ DEAD: No hope, avoid\n`,
-      `System predicts which phase you're in`,
-      `and what comes next.`,
-    ].join("\n");
+    await supabase
+      .from('bot_config')
+      .update({ trading_paused: false })
+      .eq('id', 1);
 
-    await ctx.reply(msg);
-  } catch (err: any) {
-    await ctx.reply(`❌ Error: ${err.message}`);
+    bot.sendMessage(chatId, '▶️ Trading resumed');
+  } catch (error) {
+    console.error('[Bot] Error in /resume:', error);
+    bot.sendMessage(chatId, '❌ Failed to resume trading');
   }
-});
+}
 
-// ─── Start Handler ────────────────────────────────────────────────────────
+/**
+ * /risk - Risk profile
+ */
+async function handleRiskCommand(msg: any): Promise<void> {
+  const chatId = msg.chat.id;
 
-bot.start(async (ctx: Context) => {
   try {
-    const msg = [
-      `🚀 CATALYST APEX TRADER v3.0\n`,
-      `Behavioral Market Intelligence & Execution System\n`,
-      `Commands:`,
-      `/status - System status & enabled features`,
-      `/memory - Pattern memory statistics`,
-      `/conviction - Conviction scoring explained`,
-      `/emotion - Emotion phases explained`,
-      `/help - All commands\n`,
-      `🟢 System online and monitoring markets`,
-      `📚 ${FEATURE_FLAGS.useMarketMemory ? "Learning from patterns" : "Pattern learning disabled"}`,
-      `💭 ${FEATURE_FLAGS.useEmotionModeler ? "Tracking emotion phases" : "Emotion tracking disabled"}`,
-    ].join("\n");
+    const activeWalletId = walletManager.getActiveWalletId();
+    if (!activeWalletId) {
+      return bot.sendMessage(chatId, '⚠️ No active wallet');
+    }
 
-    await ctx.reply(msg);
-  } catch (err: any) {
-    console.error("❌ Start handler error:", err.message);
+    const riskProfile = await walletManager.getWalletRiskProfile(activeWalletId);
+
+    if (!riskProfile) {
+      return bot.sendMessage(chatId, 'ℹ️ No risk profile found');
+    }
+
+    const message = `
+⚠️ **RISK PROFILE**
+━━━━━━━━━━━━━━━━━━━
+Max Position: $${riskProfile.max_position_usd.toFixed(2)}
+Max Exposure: $${riskProfile.max_total_exposure_usd.toFixed(2)}
+Max Leverage: ${riskProfile.max_leverage}x
+Max Positions: ${riskProfile.max_positions}
+
+Stop Loss: ${riskProfile.stop_loss_percent}%
+Take Profit: ${riskProfile.take_profit_percent}%
+Daily Loss Limit: $${riskProfile.max_daily_loss_usd.toFixed(2)}
+
+Current Daily Loss: $${riskProfile.current_daily_loss_usd.toFixed(2)}
+    `.trim();
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Error in /risk:', error);
+    bot.sendMessage(chatId, '❌ Failed to fetch risk profile');
   }
-});
+}
 
-// ─── Help Handler ─────────────────────────────────────────────────────────
+/**
+ * /market - Market regime
+ */
+async function handleMarketCommand(msg: any): Promise<void> {
+  const chatId = msg.chat.id;
 
-bot.help(async (ctx: Context) => {
   try {
-    const msg = [
-      `🆘 CATALYST APEX HELP\n`,
-      `Available commands:\n`,
-      `/start - Start the bot`,
-      `/status - Check system status`,
-      `/memory - View pattern memory`,
-      `/conviction - Learn conviction scoring`,
-      `/emotion - Learn emotion phases`,
-      `/help - This message\n`,
-      `Alert types:`,
-      `🔔 Signal alerts - New tokens passing security`,
-      `💭 Emotion alerts - Phase changes`,
-      `📈 Pattern alerts - Pattern recognition`,
-      `🚨 PvP alerts - Potential scams/traps`,
-      `🔄 Rotation alerts - Capital flow between narratives`,
-      `✅ Trade alerts - Position opened/closed\n`,
-      `Questions? Check BEHAVIORAL_INTELLIGENCE.md guide`,
-    ].join("\n");
+    const { data, error } = await supabase
+      .from('market_regimes')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
 
-    await ctx.reply(msg);
-  } catch (err: any) {
-    console.error("❌ Help handler error:", err.message);
+    if (error || !data) {
+      return bot.sendMessage(chatId, 'ℹ️ No market data yet');
+    }
+
+    const regimeLabel = getRegimeLabel(data.regime_score);
+    const regimeEmoji = getRegimeEmoji(data.regime_score);
+
+    const message = `
+${regimeEmoji} **MARKET REGIME**
+━━━━━━━━━━━━━━━━━━━
+Status: **${regimeLabel}**
+Score: ${data.regime_score}/100
+
+Volatility: ${data.volatility_level}
+Trend: ${data.trend_direction}
+Liquidity: ${data.avg_liquidity > 50000 ? '✅ Good' : '⚠️ Low'}
+
+Updated: ${new Date(data.created_at).toLocaleTimeString()}
+    `.trim();
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Error in /market:', error);
+    bot.sendMessage(chatId, '❌ Failed to fetch market regime');
   }
-});
+}
 
-// ─── Error Handler ────────────────────────────────────────────────────────
+/**
+ * Setup error handlers
+ */
+function setupErrorHandlers(): void {
+  bot.on('polling_error', (error: any) => {
+    console.error('[Bot] Polling error:', error);
+  });
 
-bot.on("error", (err) => {
-  console.error("❌ Telegram bot error:", err);
-});
+  bot.on('error', (error: any) => {
+    console.error('[Bot] Bot error:', error);
+  });
+}
 
-// ─── Launch Bot ────────────────────────────────────────────────────────────
+/**
+ * Helper functions
+ */
 
-export async function startBot(): Promise<void> {
-  try {
-    console.log("🤖 Starting Telegram bot...");
-    await bot.launch();
-    console.log("✅ Telegram bot online");
+function getConfidenceLabel(score: number): string {
+  if (score >= 90) return '🟢 Very High';
+  if (score >= 75) return '🟢 High';
+  if (score >= 60) return '🟡 Moderate';
+  if (score >= 45) return '🟠 Low';
+  return '🔴 Very Low';
+}
 
-    // Graceful shutdown
-    process.once("SIGINT", () => {
-      console.log("Shutting down bot...");
-      bot.stop("SIGINT");
-    });
-    process.once("SIGTERM", () => {
-      console.log("Shutting down bot...");
-      bot.stop("SIGTERM");
-    });
-  } catch (err: any) {
-    console.error("❌ Bot startup failed:", err.message);
-    throw err;
-  }
+function getEmotionEmoji(phase: string): string {
+  const emojis: { [key: string]: string } = {
+    'greed_expansion': '🚀',
+    'panic_flush': '😱',
+    'euphoric_climax': '🎉',
+    'fatigue_phase': '😴',
+    'narrative_saturation': '📊',
+    'disbelief_accumulation': '🤔',
+  };
+  return emojis[phase] || '📈';
+}
+
+function getRegimeLabel(score: number): string {
+  if (score >= 70) return 'Bull Market';
+  if (score >= 50) return 'Neutral';
+  return 'Bear Market';
+}
+
+function getRegimeEmoji(score: number): string {
+  if (score >= 70) return '🚀';
+  if (score >= 50) return '➡️';
+  return '📉';
 }
 
 export default bot;
