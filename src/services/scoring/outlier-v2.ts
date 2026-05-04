@@ -137,7 +137,7 @@ export async function checkSmartMoneyCluster(
 ): Promise<OutlierV2Result> {
   try {
     // Step 1: Get recent transaction signatures via Helius RPC
-    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
+    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.API_KEY}`;
     const sigRes = await axios.post(
       rpcUrl,
       {
@@ -154,7 +154,7 @@ export async function checkSmartMoneyCluster(
 
     // Step 2: Parse transactions via Enhanced API
     const txRes = await axios.post(
-      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.apiKey}`,
+      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.API_KEY}`,
       { transactions: signatures.slice(0, 20) },
       { timeout: 12000 }
     );

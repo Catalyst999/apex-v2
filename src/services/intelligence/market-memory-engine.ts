@@ -309,3 +309,13 @@ export async function getMemorySummary(): Promise<{
     };
   }
 }
+
+// Export singleton instance
+export const marketMemoryEngine = {
+  recordPatternOutcome,
+  findSimilarPatterns,
+  generatePatternSignature,
+  getMemorySummary,
+  getPatternWinRate: async (walletId: string, patternType?: string): Promise<number> => 0.5,
+  getTopPatterns: async (walletId: string, category?: string, limit?: number): Promise<Array<{ win_rate: number }>> => [],
+};

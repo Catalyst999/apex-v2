@@ -10,7 +10,7 @@ app.use(express.json());
 // Helius webhook endpoint
 app.post("/webhook/helius", (req: Request, res: Response) => {
   const secret = req.headers["authorization"];
-  if (secret !== HELIUS.webhookSecret) {
+  if (secret !== HELIUS.WEBHOOK_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 

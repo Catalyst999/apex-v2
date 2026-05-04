@@ -35,7 +35,7 @@ export function createWebhookServer(
   app.post("/webhook", async (req, res) => {
     try {
       const secret = req.headers["authorization"] ?? req.query.secret;
-      if (HELIUS.webhookSecret && secret !== HELIUS.webhookSecret) {
+      if (HELIUS.WEBHOOK_SECRET && secret !== HELIUS.WEBHOOK_SECRET) {
         console.warn("⚠️  Webhook: unauthorized request rejected");
         return res.status(401).json({ error: "unauthorized" });
       }
@@ -120,7 +120,7 @@ function parseWebhookEvent(event: any): WebhookPair | null {
 
 export async function registerHeliusWebhook(): Promise<string | null> {
   try {
-    if (!HELIUS.apiKey) {
+    if (!HELIUS.API_KEY) {
       console.error("❌ HELIUS_API_KEY not set");
       return null;
     }
@@ -133,7 +133,7 @@ export async function registerHeliusWebhook(): Promise<string | null> {
     console.log(`📡 Registering Helius webhook: ${webhookUrl}`);
 
     const listRes = await axios.get(
-      `https://api.helius.xyz/v0/webhooks?api-key=${HELIUS.apiKey}`
+      `https://api.helius.xyz/v0/webhooks?api-key=${HELIUS.API_KEY}`
     );
     const existing = (listRes.data ?? []).find(
       (w: any) => w.webhookURL === webhookUrl
@@ -145,13 +145,13 @@ export async function registerHeliusWebhook(): Promise<string | null> {
     }
 
     const res = await axios.post(
-      `https://api.helius.xyz/v0/webhooks?api-key=${HELIUS.apiKey}`,
+      `https://api.helius.xyz/v0/webhooks?api-key=${HELIUS.API_KEY}`,
       {
         webhookURL:       webhookUrl,
         transactionTypes: ["Any"],
         accountAddresses: [RAYDIUM_AMM_PROGRAM, RAYDIUM_CLMM_PROGRAM],
         webhookType:      "enhanced",
-        authHeader:       HELIUS.webhookSecret,
+        authHeader:       HELIUS.WEBHOOK_SECRET,
       }
     );
 

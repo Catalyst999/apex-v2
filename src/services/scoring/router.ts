@@ -11,10 +11,10 @@
 // Keep all existing logic, ADD these enhancements
 
 import { FEATURE_FLAGS, MARKET_REGIME, CONVICTION_THRESHOLDS } from "../../core/config";
-import { calculateConvictionMode, AlignmentScore } from "./conviction-scaler";
-import { detectEmotionPhase, PhaseIndicators } from "./emotion-modeler";
-import { assessPvPSafety } from "./pvp-survival-detector";
-import { detectFakeBreakout, detectExitLiquidityTrap } from "./pvp-survival-detector";
+import { calculateConvictionMode, AlignmentScore } from "../intelligence/conviction-scaler";
+import { detectEmotionPhase, PhaseIndicators } from "../intelligence/emotion-modeler";
+import { assessPvPSafety } from "../intelligence/pvp-survival-detector";
+import { detectFakeBreakout, detectExitLiquidityTrap } from "../intelligence/pvp-survival-detector";
 
 export interface RoutingDecision {
   shouldTrade: boolean;
@@ -136,15 +136,15 @@ export async function routeSignal(
     reasons.push(`💭 Emotion phase: ${emotion.phase} (intensity: ${emotion.intensity}%)`);
 
     // Skip on death phases
-    if (emotion.phase === "DEATH_SPIRAL" || emotion.phase === "CAPITULATION") {
+    if (emotion.phase === "PANIC" || emotion.phase === "FEAR") {
       shouldSkipEmotion = true;
-      reasons.push("🛑 Emotion-based skip: Death spiral or capitulation detected");
+      reasons.push("🛑 Emotion-based skip: Panic or fear phase detected");
     }
 
     // Reduce on exhaustion
-    if (emotion.phase === "EXHAUSTION_TOP" || emotion.phase === "FEAR") {
+    if (emotion.phase === "EXHAUSTION" || emotion.phase === "DISTRIBUTION") {
       convictionMultiplier *= 0.7;
-      reasons.push("⚠️ Conviction reduced: Exhaustion/fear phase");
+      reasons.push("⚠️ Conviction reduced: Exhaustion/distribution phase");
     }
   }
 
@@ -221,14 +221,14 @@ export async function routeSignal(
 
   // Apply multiplier to alignment scores
   const adjustedAlignment: AlignmentScore = {
-    narrativeScore: alignmentScore.narrativeScore * convictionMultiplier,
-    technicalScore: alignmentScore.technicalScore * convictionMultiplier,
-    behavioralScore: alignmentScore.behavioralScore * convictionMultiplier,
-    liquidityScore: alignmentScore.liquidityScore,
-    safetyScore: alignmentScore.safetyScore,
-    timerScore: alignmentScore.timerScore,
+    narrativeScore: (alignmentScore.narrativeScore ?? 0) * convictionMultiplier,
+    technicalScore: (alignmentScore.technicalScore ?? 0) * convictionMultiplier,
+    behavioralScore: (alignmentScore.behavioralScore ?? 0) * convictionMultiplier,
+    liquidityScore: alignmentScore.liquidityScore ?? 0,
+    safetyScore: alignmentScore.safetyScore ?? 0,
+    timerScore: alignmentScore.timerScore ?? 0,
     marketRegimeScore: regimeScore,
-    smartMoneyScore: alignmentScore.smartMoneyScore,
+    smartMoneyScore: alignmentScore.smartMoneyScore ?? 0,
   };
 
   const conviction = calculateConvictionMode(adjustedAlignment);
@@ -284,7 +284,7 @@ export async function routeSignal(
     reason: reasons.join(" | "),
     severity,
     convictionMode: conviction.mode,
-    recommendedPositionSize: conviction.maxPositionSize,
+    recommendedPositionSize: conviction.maxPositionSize ?? 10,
     recommendedLeverage: conviction.leverage,
   };
 }

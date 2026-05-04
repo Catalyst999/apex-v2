@@ -44,8 +44,8 @@ const SOL_MINT       = "So11111111111111111111111111111111111111112";
 
 // ─── Helius endpoints ─────────────────────────────────────────────────────────
 
-const HELIUS_RPC      = () => `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
-const HELIUS_ENHANCED = () => `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.apiKey}`;
+const HELIUS_RPC      = () => `https://mainnet.helius-rpc.com/?api-key=${HELIUS.API_KEY}`;
+const HELIUS_ENHANCED = () => `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.API_KEY}`;
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
 

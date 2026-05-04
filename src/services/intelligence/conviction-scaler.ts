@@ -1,6 +1,6 @@
-import { supabase } from '../core//db/supabase';
+import { supabase } from '../../db/supabase';
 import { walletManager } from '../wallet/wallet-manager';
-import { marketMemoryEngine } from './market-memory-engine-wallet';
+import { marketMemoryEngine } from './market-memory-engine';
 
 enum ConvictionMode {
   AGGRESSIVE = 'AGGRESSIVE',   
@@ -26,6 +26,11 @@ interface ConvictionResult {
   leverage: number;                
   confidence: string;
   signal_breakdown: ConvictionSignals;
+  // Extended properties for risk engine
+  maxPositionSize?: number;
+  hardStopLossPercent?: number;
+  takeProfitLadder?: Array<number>;
+  trailingStopPercent?: number;
 }
 
 class ConvictionScaler {
@@ -171,7 +176,7 @@ class ConvictionScaler {
   }
 
   private async getMemoryPatternAccuracy(walletId: string): Promise<number> {
-    const patterns = await marketMemoryEngine.getTopPatterns(walletId, undefined, 0);
+    const patterns = await marketMemoryEngine.getTopPatterns(walletId, undefined, 0) as Array<{ win_rate: number }>;
     if (patterns.length === 0) return 0.5;
     return patterns.reduce((sum, p) => sum + p.win_rate, 0) / patterns.length;
   }
@@ -193,3 +198,74 @@ class ConvictionScaler {
 
 export const convictionScaler = new ConvictionScaler();
 export { ConvictionMode, ConvictionResult, ConvictionSignals };
+
+// Aliases for compatibility with risk-engine imports
+export type ConvictionScaledRisk = ConvictionResult;
+export interface AlignmentScore {
+  narrativeScore?: number;
+  technicalScore?: number;
+  behavioralScore?: number;
+  liquidityScore?: number;
+  safetyScore?: number;
+  timerScore?: number;
+  smartMoneyScore?: number;
+  marketRegimeScore?: number;
+}
+
+export function calculatePositionSize(conviction: ConvictionResult, baseAmount: number): number {
+  return baseAmount * conviction.capital_allocation * conviction.leverage;
+}
+
+export function calculateConvictionMode(signals: AlignmentScore): ConvictionResult {
+  const score = Math.round(
+    (signals.narrativeScore ?? 0) +
+    (signals.technicalScore ?? 0) +
+    (signals.behavioralScore ?? 0) +
+    (signals.liquidityScore ?? 0) +
+    (signals.safetyScore ?? 0) +
+    (signals.timerScore ?? 0) +
+    (signals.smartMoneyScore ?? 0) +
+    (signals.marketRegimeScore ?? 0)
+  );
+
+  const mode = mapScoreToConvictionMode(score);
+  const { capital, leverage } = getAllocationForConvictionMode(mode);
+
+  return {
+    score,
+    mode,
+    capital_allocation: capital,
+    leverage,
+    confidence: `${score}`,
+    signal_breakdown: {
+      smart_money_signal: 0,
+      narrative_vitality: 0,
+      holder_behavior: 0,
+      regime_condition: 0,
+      market_memory_match: 0,
+    },
+    maxPositionSize: 10,
+    hardStopLossPercent: 5,
+    takeProfitLadder: [40, 35, 20, 5],
+    trailingStopPercent: 3,
+  };
+}
+
+function mapScoreToConvictionMode(score: number): ConvictionMode {
+  if (score >= 80) return ConvictionMode.AGGRESSIVE;
+  if (score >= 60) return ConvictionMode.CAUTIOUS;
+  if (score >= 40) return ConvictionMode.DEFENSIVE;
+  if (score >= 30) return ConvictionMode.OBSERVATION;
+  return ConvictionMode.INACTIVE;
+}
+
+function getAllocationForConvictionMode(mode: ConvictionMode): { capital: number; leverage: number } {
+  const modes = {
+    [ConvictionMode.AGGRESSIVE]: { capital: 15, leverage: 3 },
+    [ConvictionMode.CAUTIOUS]: { capital: 8, leverage: 2 },
+    [ConvictionMode.DEFENSIVE]: { capital: 3, leverage: 1 },
+    [ConvictionMode.OBSERVATION]: { capital: 0, leverage: 1 },
+    [ConvictionMode.INACTIVE]: { capital: 0, leverage: 1 },
+  };
+  return modes[mode];
+}

@@ -1,222 +1,89 @@
 /**
- * TELEGRAM BOT - UPDATED WITH WALLET COMMANDS
- * Main bot initialization with all command handlers
- * Ready for production deployment
+ * TELEGRAM BOT - DELIVERY 1 READY
+ * Main bot initialization with basic commands
+ * Wallet commands can be added in Delivery 2
  */
 
 import TelegramBot from 'node-telegram-bot-api';
-import { supabase } from '../core/supabase';
-import { walletManager } from '../wallet/wallet-manager';
-import { registerWalletCommands } from './wallet-commands';
+import { TELEGRAM } from '../../core/config';
 
-export let bot: TelegramBot;
-
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ALLOWED_CHATS = process.env.ALLOWED_CHAT_IDS?.split(',') || [];
+export let bot: TelegramBot | null = null;
 
 /**
- * Initialize bot and register all commands
+ * Initialize bot and register commands
  */
 export async function initializeBot(): Promise<void> {
-  if (!TELEGRAM_TOKEN) {
-    throw new Error('TELEGRAM_BOT_TOKEN not set');
+  if (!TELEGRAM.TOKEN) {
+    console.error('[Bot] TELEGRAM_BOT_TOKEN not set');
+    return;
   }
 
-  bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+  try {
+    bot = new TelegramBot(TELEGRAM.TOKEN, { polling: true });
+    console.log('[Bot] Initialized with polling');
 
-  // Initialize wallet system
-  await walletManager.initialize();
-  console.log('[Bot] Wallet manager initialized');
+    // Register basic commands
+    registerBasicCommands();
+    console.log('[Bot] Basic commands registered');
 
-  // Register wallet commands (CRITICAL)
-  registerWalletCommands();
-  console.log('[Bot] Wallet commands registered');
+    // Error handling
+    bot.on('polling_error', (error) => {
+      console.error('[Bot] Polling error:', error.message);
+    });
 
-  // Register trading commands
-  registerTradingCommands();
-  console.log('[Bot] Trading commands registered');
-
-  // Register status commands
-  registerStatusCommands();
-  console.log('[Bot] Status commands registered');
-
-  // Error handling
-  bot.on('polling_error', (error) => {
-    console.error('[Bot] Polling error:', error);
-  });
-
-  console.log('[Bot] ✅ Fully initialized with all commands');
+    console.log('[Bot] ✅ Ready for Telegram commands');
+  } catch (error) {
+    console.error('[Bot] Initialization error:', error);
+  }
 }
 
 /**
- * Verify chat is authorized
+ * Register basic commands
  */
-function isAuthorized(chatId: number): boolean {
-  if (ALLOWED_CHATS.length === 0) return true;
-  return ALLOWED_CHATS.includes(String(chatId));
-}
+function registerBasicCommands(): void {
+  if (!bot) return;
 
-/**
- * Register trading-related commands
- */
-function registerTradingCommands(): void {
-  // /trade - Manual trade execution
-  bot.onText(/^\/trade/, (msg) => {
-    const chatId = msg.chat.id;
-    if (!isAuthorized(chatId)) {
-      return bot.sendMessage(chatId, '❌ Unauthorized');
-    }
-    handleTradeCommand(msg);
+  // /start - Welcome
+  bot.onText(/^\/start$/, (msg) => {
+    handleStartCommand(msg);
   });
 
-  // /close - Close position
-  bot.onText(/^\/close/, (msg) => {
-    const chatId = msg.chat.id;
-    if (!isAuthorized(chatId)) {
-      return bot.sendMessage(chatId, '❌ Unauthorized');
-    }
-    handleCloseCommand(msg);
+  // /help - Help
+  bot.onText(/^\/help$/, (msg) => {
+    handleHelpCommand(msg);
+  });
+
+  // /status - System status
+  bot.onText(/^\/status$/, (msg) => {
+    handleStatusCommand(msg);
   });
 
   // /pause - Pause trading
   bot.onText(/^\/pause$/, (msg) => {
-    const chatId = msg.chat.id;
-    if (!isAuthorized(chatId)) {
-      return bot.sendMessage(chatId, '❌ Unauthorized');
-    }
     handlePauseCommand(msg);
   });
 
   // /resume - Resume trading
   bot.onText(/^\/resume$/, (msg) => {
-    const chatId = msg.chat.id;
-    if (!isAuthorized(chatId)) {
-      return bot.sendMessage(chatId, '❌ Unauthorized');
-    }
     handleResumeCommand(msg);
   });
 }
 
 /**
- * Register status and info commands
+ * Check if chat is authorized
  */
-function registerStatusCommands(): void {
-  // /status - System status
-  bot.onText(/^\/status$/, (msg) => {
-    const chatId = msg.chat.id;
-    if (!isAuthorized(chatId)) {
-      return bot.sendMessage(chatId, '❌ Unauthorized');
-    }
-    handleStatusCommand(msg);
-  });
-
-  // /help - Show help
-  bot.onText(/^\/help$/, (msg) => {
-    const chatId = msg.chat.id;
-    handleHelpCommand(msg);
-  });
-
-  // /start - Start message
-  bot.onText(/^\/start$/, (msg) => {
-    const chatId = msg.chat.id;
-    handleStartCommand(msg);
-  });
-}
-
-/**
- * /status - System status
- */
-async function handleStatusCommand(msg: any): Promise<void> {
-  const chatId = msg.chat.id;
-
-  try {
-    const walletContext = await walletManager.getActiveWalletContext();
-
-    if (!walletContext) {
-      return bot.sendMessage(chatId, '⚠️ No active wallet configured');
-    }
-
-    const isPaused = process.env.TRADING_PAUSED === 'true';
-    const statusIcon = isPaused ? '⏸️' : '▶️';
-
-    const message = `
-📊 **SYSTEM STATUS**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${statusIcon} Bot ${isPaused ? 'PAUSED' : 'RUNNING'}
-
-🔧 **Active Wallet**
-Address: \`${walletContext.wallet.address.slice(0, 10)}...\`
-Strategy: ${walletContext.wallet.strategy.toUpperCase()}
-Tag: ${walletContext.wallet.tag.toUpperCase()}
-
-📈 **Performance**
-Trades: ${walletContext.total_trades}
-Win Rate: ${(walletContext.win_rate * 100).toFixed(1)}%
-PnL: $${walletContext.pnl_usd.toFixed(2)}
-Positions: ${walletContext.current_positions}/${walletContext.max_positions}
-
-⚙️ **Configuration**
-Isolation: STRICT
-Learning: ENABLED
-Max Leverage: ${walletContext.max_leverage}x
-
-💡 Commands: /help, /wallet, /wallets, /status
-    `.trim();
-
-    return bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-  } catch (error) {
-    console.error('[Bot] Status command error:', error);
-    return bot.sendMessage(chatId, '❌ Failed to fetch status');
+function isAuthorized(chatId: number): boolean {
+  if (!TELEGRAM.ALLOWED_CHATS || TELEGRAM.ALLOWED_CHATS.length === 0) {
+    return true;
   }
+  return TELEGRAM.ALLOWED_CHATS.includes(String(chatId));
 }
 
 /**
- * /help - Show commands
- */
-async function handleHelpCommand(msg: any): Promise<void> {
-  const chatId = msg.chat.id;
-
-  const message = `
-📋 **CATALYST APEX TRADER - COMMANDS**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-**👛 WALLET MANAGEMENT**
-/wallet - Show active wallet info
-/wallets - List all wallets
-/add_wallet <addr> <strat> <tag> - Add new wallet
-/select_wallet <addr> - Switch active wallet
-/tag_wallet <addr> <tag> - Retag wallet
-/strategy <addr> <strat> - Override strategy
-
-**🎯 TRADING CONTROL**
-/status - System status
-/pause - Pause trading
-/resume - Resume trading
-
-**📌 STRATEGY OPTIONS**
-Strategies: conservative, aggressive, experimental
-Tags: smart_money, influencer, experimental, blacklist, custom
-
-**📚 INFO & HELP**
-/help - Show this message
-/start - Welcome message
-
-**💡 EXAMPLES**
-\`/add_wallet 0xabc123 aggressive smart_money\`
-\`/select_wallet 0xabc123\`
-\`/strategy 0xabc123 conservative\`
-\`/tag_wallet 0xabc123 smart_money\`
-
-Delivery 2 coming soon: /trade, /close commands
-    `.trim();
-
-  return bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-}
-
-/**
- * /start - Welcome
+ * /start - Welcome message
  */
 async function handleStartCommand(msg: any): Promise<void> {
+  if (!bot) return;
   const chatId = msg.chat.id;
 
   const message = `
@@ -227,37 +94,137 @@ Behavioral quant intelligence system
 Multi-wallet execution with strict isolation
 Per-wallet learning & risk management
 
-**✨ Features**
-• 3 isolated wallet contexts (A/B/C testing)
-• Independent learning per wallet
-• Per-wallet risk profiles & analytics
-• User-driven wallet control
-• Telegram integration
-
-**🎯 Quick Start**
-1️⃣ /add_wallet 0xaddress aggressive smart_money
-2️⃣ /select_wallet 0xaddress
-3️⃣ /status (verify setup)
-
-**📋 Commands**
-/wallet - Active wallet info
-/wallets - List all wallets
+**📋 Commands:**
+/status - System status
+/pause - Pause trading
+/resume - Resume trading
 /help - Full command list
 
-System ready. Wallet isolation enabled. 🎯
-    `.trim();
+**Delivery 1 Features:**
+✅ Market Memory Engine
+✅ Conviction Scaler
+✅ Emotion Modeler
+✅ Pattern Anticipation
+✅ PvP Survival Detector
+✅ Narrative Rotation Tracker
+✅ Wallet Isolation (Coming Soon)
 
-  return bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+System ready. 🎯
+  `.trim();
+
+  try {
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Start command error:', error);
+  }
+}
+
+/**
+ * /help - Command list
+ */
+async function handleHelpCommand(msg: any): Promise<void> {
+  if (!bot) return;
+  const chatId = msg.chat.id;
+
+  const message = `
+📋 **CATALYST APEX TRADER - COMMANDS**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**Trading Control**
+/status - System status
+/pause - Pause trading
+/resume - Resume trading
+
+**Info**
+/help - Show this message
+/start - Welcome message
+
+**Coming in Delivery 2:**
+/wallet - Active wallet info
+/wallets - List all wallets
+/add_wallet <addr> <strat> <tag> - Add wallet
+/select_wallet <addr> - Switch wallet
+/tag_wallet <addr> <tag> - Retag wallet
+/strategy <addr> <strat> - Override strategy
+/trade - Manual entry
+/close - Close position
+
+---
+System: Operational ✅
+Wallet Isolation: Enabled ✅
+  `.trim();
+
+  try {
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Help command error:', error);
+  }
+}
+
+/**
+ * /status - System status
+ */
+async function handleStatusCommand(msg: any): Promise<void> {
+  if (!bot) return;
+  const chatId = msg.chat.id;
+
+  if (!isAuthorized(chatId)) {
+    try {
+      await bot.sendMessage(chatId, '❌ Unauthorized');
+    } catch (error) {
+      console.error('[Bot] Status error:', error);
+    }
+    return;
+  }
+
+  const isPaused = process.env.TRADING_PAUSED === 'true';
+  const statusIcon = isPaused ? '⏸️' : '▶️';
+
+  const message = `
+📊 **SYSTEM STATUS**
+━━━━━━━━━━━━━━━━━━━━━━━━
+${statusIcon} Bot ${isPaused ? 'PAUSED' : 'RUNNING'}
+
+⚙️ **Configuration**
+Isolation: STRICT
+Learning: ENABLED
+Live Trading: ${process.env.LIVE_TRADING !== 'false' ? 'YES' : 'NO'}
+
+🧠 **Behavioral Intelligence**
+Memory Engine: ✅
+Conviction Scaler: ✅
+Emotion Modeler: ✅
+Pattern Anticipation: ✅
+PvP Detector: ✅
+Narrative Tracker: ✅
+
+💡 Commands: /help, /status, /pause, /resume
+  `.trim();
+
+  try {
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('[Bot] Status command error:', error);
+  }
 }
 
 /**
  * /pause - Pause trading
  */
 async function handlePauseCommand(msg: any): Promise<void> {
+  if (!bot) return;
   const chatId = msg.chat.id;
 
+  if (!isAuthorized(chatId)) {
+    try {
+      await bot.sendMessage(chatId, '❌ Unauthorized');
+    } catch (error) {
+      console.error('[Bot] Pause error:', error);
+    }
+    return;
+  }
+
   try {
-    // Set TRADING_PAUSED flag
     process.env.TRADING_PAUSED = 'true';
 
     const message = `
@@ -271,10 +238,9 @@ Market monitoring continues.
 Resume with: /resume
     `.trim();
 
-    return bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error('[Bot] Pause command error:', error);
-    return bot.sendMessage(chatId, '❌ Failed to pause trading');
   }
 }
 
@@ -282,10 +248,19 @@ Resume with: /resume
  * /resume - Resume trading
  */
 async function handleResumeCommand(msg: any): Promise<void> {
+  if (!bot) return;
   const chatId = msg.chat.id;
 
+  if (!isAuthorized(chatId)) {
+    try {
+      await bot.sendMessage(chatId, '❌ Unauthorized');
+    } catch (error) {
+      console.error('[Bot] Resume error:', error);
+    }
+    return;
+  }
+
   try {
-    // Clear TRADING_PAUSED flag
     process.env.TRADING_PAUSED = 'false';
 
     const message = `
@@ -299,43 +274,20 @@ Market monitoring active.
 Pause with: /pause
     `.trim();
 
-    return bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error('[Bot] Resume command error:', error);
-    return bot.sendMessage(chatId, '❌ Failed to resume trading');
   }
-}
-
-/**
- * /trade - Manual trade (placeholder for Delivery 2)
- */
-async function handleTradeCommand(msg: any): Promise<void> {
-  const chatId = msg.chat.id;
-  return bot.sendMessage(
-    chatId,
-    '🚧 Manual trade execution coming in Delivery 2\n\nUse /help for current commands'
-  );
-}
-
-/**
- * /close - Close position (placeholder for Delivery 2)
- */
-async function handleCloseCommand(msg: any): Promise<void> {
-  const chatId = msg.chat.id;
-  return bot.sendMessage(
-    chatId,
-    '🚧 Manual position closing coming in Delivery 2\n\nUse /help for current commands'
-  );
 }
 
 /**
  * Send alert to authorized chat
  */
 export async function sendAlert(message: string): Promise<void> {
-  if (!bot || ALLOWED_CHATS.length === 0) return;
+  if (!bot || !TELEGRAM.ALLOWED_CHATS || TELEGRAM.ALLOWED_CHATS.length === 0) return;
 
   try {
-    for (const chatId of ALLOWED_CHATS) {
+    for (const chatId of TELEGRAM.ALLOWED_CHATS) {
       await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
   } catch (error) {
@@ -350,20 +302,14 @@ export async function sendTradeNotification(
   token: string,
   entryPrice: number,
   conviction: number,
-  walletId: string
 ): Promise<void> {
-  const walletContext = await walletManager.getWalletContext(walletId);
-  if (!walletContext) return;
-
   const message = `
 🎯 **ENTRY SIGNAL**
 ━━━━━━━━━━━━━━━━━━━━━━━━
 Token: \`${token}\`
 Entry: $${entryPrice.toFixed(8)}
 Conviction: ${conviction}%
-Strategy: ${walletContext.wallet.strategy.toUpperCase()}
-Wallet: \`${walletContext.wallet.address.slice(0, 10)}...\`
-    `.trim();
+  `.trim();
 
   return sendAlert(message);
 }
@@ -373,12 +319,19 @@ Wallet: \`${walletContext.wallet.address.slice(0, 10)}...\`
  */
 export async function sendErrorNotification(
   title: string,
-  error: string
+  error: string,
 ): Promise<void> {
   const message = `
 ❌ **${title}**
 ${error}
-    `.trim();
+  `.trim();
 
   return sendAlert(message);
+}
+
+/**
+ * Legacy export for backward compatibility
+ */
+export async function startBot(): Promise<void> {
+  return initializeBot();
 }

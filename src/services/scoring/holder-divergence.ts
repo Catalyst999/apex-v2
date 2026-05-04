@@ -39,7 +39,7 @@ async function fetchHolderCount(tokenAddress: string): Promise<number> {
   try {
     // Try DexScreener first (already in pair data — use that path)
     // Try Helius as fallback
-    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
+    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.API_KEY}`;
     const res = await axios.post(
       rpcUrl,
       {
@@ -70,7 +70,7 @@ async function estimateHolderVelocity(tokenAddress: string): Promise<{
   netChange: number;     // estimated net holder change
 }> {
   try {
-    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
+    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.API_KEY}`;
     const sigRes = await axios.post(
       rpcUrl,
       {
@@ -87,7 +87,7 @@ async function estimateHolderVelocity(tokenAddress: string): Promise<{
 
     // Parse enhanced transactions
     const txRes = await axios.post(
-      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.apiKey}`,
+      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.API_KEY}`,
       { transactions: signatures.slice(0, 20).map((s: any) => s.signature) },
       { timeout: 10000 }
     );

@@ -51,13 +51,13 @@ export async function sendApexAlert(
 📈 Score: *${score.total}/100* | Signal: *${ai.signal}*
 
 🧠 *AI Analysis:*
-"${ai.haiku}"
+"${ai.reason || ai.narrative || 'Analysis pending'}"
 
 🔥 *Alpha Factors:*
 • Narrative: ${narrative.matched ? narrative.narrativeName : "None"} (Tier ${narrative.tier})
-• Momentum: ${outlier.isOutlier ? "✅ Extreme" : "Neutral"}
+• Momentum: ${(outlier as any).signal ? "✅ Extreme" : "Neutral"}
 • Smart Money: ${wallets && wallets.length > 0 ? `✅ ${wallets.length} buys` : "None detected"}
-• Confidence: ${score.confidenceLevel}
+• Confidence: ${(score as any).confidence || score.total}%
 
 📍 \`${address}\`
 🔗 [DexScreener](https://dexscreener.com/solana/${address}) | [Birdeye](https://birdeye.so/token/${address})

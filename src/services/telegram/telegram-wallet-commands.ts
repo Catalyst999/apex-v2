@@ -7,7 +7,7 @@ import { WalletStrategy, WalletTag } from '../wallet/wallet-types';
 
 export const handleWalletStatus = async (msg: any) => {
   const context = await walletManager.getActiveWalletContext();
-  if (!context) return bot.sendMessage(msg.chat.id, 'No active wallet. Use /add_wallet.');
+  if (!context || !bot) return;
 
   const message = `
 📊 **ACTIVE WALLET**
@@ -20,6 +20,7 @@ PnL: $${context.pnl_usd.toFixed(2)}
 };
 
 export const handleListWallets = async (msg: any) => {
+  if (!bot) return;
   const wallets = await walletManager.getAllWallets();
   let message = '📋 **ALL WALLETS**\n';
   for (const w of wallets) {
@@ -30,6 +31,7 @@ export const handleListWallets = async (msg: any) => {
 };
 
 export const registerWalletCommands = () => {
+  if (!bot) return;
   bot.onText(/^\/wallet$/, handleWalletStatus);
   bot.onText(/^\/wallets$/, handleListWallets);
   console.log('[WalletCommands] Registered.');

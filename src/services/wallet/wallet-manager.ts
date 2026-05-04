@@ -1,4 +1,4 @@
-import { supabase } from '../core/supabase';
+import { supabase } from '../../db/supabase';
 import { Wallet, WalletAnalytics } from './wallet-types';
 
 class WalletManager {

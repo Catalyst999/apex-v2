@@ -64,7 +64,7 @@ export async function analyzeWallet(
   walletAddress: string
 ): Promise<InsiderWallet | null> {
   try {
-    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
+    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.API_KEY}`;
 
     const sigRes = await axios.post(
       rpcUrl,
@@ -86,7 +86,7 @@ export async function analyzeWallet(
     }
 
     const txRes = await axios.post(
-      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.apiKey}`,
+      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.API_KEY}`,
       {
         transactions: sigs.slice(0, 30),
       },
@@ -322,7 +322,7 @@ async function checkWalletCoordination(
   coordinatedWith: string[];
 }> {
   try {
-    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
+    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.API_KEY}`;
 
     const sigRes = await axios.post(
       rpcUrl,
@@ -340,7 +340,7 @@ async function checkWalletCoordination(
       .filter(Boolean);
 
     const txRes = await axios.post(
-      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.apiKey}`,
+      `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.API_KEY}`,
       {
         transactions: sigs.slice(0, 15),
       },
@@ -407,7 +407,7 @@ export async function detectInsidersFromSuccessfulTokens(): Promise<
 
     const insiders: InsiderWallet[] = [];
 
-    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.apiKey}`;
+    const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS.API_KEY}`;
 
     for (const pair of successfulPairs) {
       try {
@@ -437,7 +437,7 @@ export async function detectInsidersFromSuccessfulTokens(): Promise<
         }
 
         const txRes = await axios.post(
-          `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.apiKey}`,
+          `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS.API_KEY}`,
           {
             transactions: sigs.slice(0, 10),
           },

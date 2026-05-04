@@ -266,7 +266,14 @@ async function closePosition(
   }).eq("id", pos.id);
 
   // Record outcome in risk engine
-  await recordTradeOutcome(pnlUsd > 0, pnlUsd);
+  recordTradeOutcome({
+    tokenAddress: tokenAddress,
+    entryPrice: pos.entry_price,
+    exitPrice: currentPrice,
+    pnlPercent: ((currentPrice - pos.entry_price) / pos.entry_price) * 100,
+    pnlUsd: pnlUsd,
+    reason: reason
+  });
 
   await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, reason);
   console.log(`✅ Position closed — ${reason} | PnL: $${pnlUsd.toFixed(2)}`);

@@ -44,7 +44,7 @@ export interface EmotionSnapshot {
 
 // ─── Phase Transition Logic ───────────────────────────────────────────────
 
-interface PhaseIndicators {
+export interface PhaseIndicators {
   priceChange:          number;        // % from local min/max
   volumeTrend:          number;        // accelerating or dying
   buySellRatio:         number;        // weighted buy vs sell

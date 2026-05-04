@@ -51,7 +51,8 @@ export function sizePosition(
 
   // ─── Calculate Position Size ──────────────────────────────────────────
 
-  const maxPositionFromConviction = equityBalanceUSD * (conviction.maxPositionSize / 100);
+  const maxPosSize = conviction.maxPositionSize ?? 10; // Default 10%
+  const maxPositionFromConviction = equityBalanceUSD * (maxPosSize / 100);
   const maxPositionFromRisk = RISK_CONFIG.maxPositionSizeUSD;
   const maxPositionAllowed = Math.min(maxPositionFromConviction, maxPositionFromRisk);
 
@@ -97,12 +98,13 @@ export function sizePosition(
 
   // Assuming we're entering at market
   const entryPrice = 1; // Normalized for calculation
-  const hardStopPercent = conviction.hardStopLossPercent;
+  const hardStopPercent = conviction.hardStopLossPercent ?? 5; // Default 5%
   const stopLossPrice = entryPrice * (1 - hardStopPercent / 100);
 
   // ─── Profit Taking Ladder ────────────────────────────────────────────
 
-  const takeProfitLadder = conviction.takeProfitLadder.map((targetPercent, index) => {
+  const ladder = conviction.takeProfitLadder ?? [40, 35, 20, 5]; // Default ladder
+  const takeProfitLadder = ladder.map((targetPercent, index) => {
     // Each target is a price level
     // For example, if ladder is [40, 35, 20, 5]:
     // Take 40% profit at 2x
@@ -123,7 +125,7 @@ export function sizePosition(
   // ─── Risk/Reward Ratio ────────────────────────────────────────────────
 
   const maxPotentialProfit = takeProfitLadder[takeProfitLadder.length - 1]?.profitPercent || 50;
-  const maxRisk = hardStopPercent;
+  const maxRisk = hardStopPercent ?? 5;
   const riskRewardRatio = maxPotentialProfit / maxRisk;
 
   // Skip if risk/reward not favorable
@@ -136,6 +138,7 @@ export function sizePosition(
 
   // ─── Finalize Trade Parameters ────────────────────────────────────────
 
+  const trailingStop = conviction.trailingStopPercent ?? 3; // Default 3%
   const trade: RiskAdjustedTrade = {
     tokenAddress: "TBD", // Set by caller
     entryPrice,
@@ -143,10 +146,10 @@ export function sizePosition(
     positionSizeTokens: finalPositionSize / entryPrice, // will be real price
     leverage: appliedLeverage,
     stopLossPrice,
-    hardStopLossPercent: hardStopPercent,
+    hardStopLossPercent: hardStopPercent ?? 5,
     takeProfitLadder,
-    trailingStopPercent: conviction.trailingStopPercent,
-    estimatedMaxLoss: finalPositionSize * (hardStopPercent / 100),
+    trailingStopPercent: trailingStop,
+    estimatedMaxLoss: finalPositionSize * ((hardStopPercent ?? 5) / 100),
     riskRewardRatio,
     convictionMode: conviction.mode,
   };
@@ -160,13 +163,14 @@ export function adjustPositionForConviction(
   conviction: ConvictionScaledRisk,
   basePositionSize: number,
 ): number {
-  // Scale position based on conviction confidence
-  const confidenceMultiplier = conviction.confidence / 100;
+  // Scale position based on conviction score
+  const confidenceScore = conviction.score;
+  const confidenceMultiplier = Math.min(confidenceScore / 100, 1); // Cap at 1.0
 
   const scaledSize = basePositionSize * confidenceMultiplier;
 
   console.log(
-    `📊 Position scaled: ${basePositionSize} → ${scaledSize.toFixed(0)} (${conviction.confidence}% confidence)`,
+    `📊 Position scaled: ${basePositionSize} → ${scaledSize.toFixed(0)} (${conviction.score} score)`,
   );
 
   return scaledSize;
@@ -312,7 +316,7 @@ export function calculateProfitTaking(
   remainingAmount: number;
   nextTarget: number | null;
 } {
-  const ladder = conviction.takeProfitLadder;
+  const ladder = conviction.takeProfitLadder ?? [40, 35, 20, 5]; // Default ladder
   let remainingAmount = positionSizeTokens;
   let takeAmount = 0;
 
@@ -361,4 +365,50 @@ export function summarizeRisk(trade: RiskAdjustedTrade): string {
   ];
 
   return lines.join("\n");
+}
+
+// ─── Ladder Targets ───────────────────────────────────────────────────────
+
+export interface LadderTarget {
+  multiplier: number;
+  action: string;
+  sellPct: number;
+}
+
+export function getLadderTargets(strategy: string): LadderTarget[] {
+  return [
+    { multiplier: 2, action: "💰 2x - Take 30%", sellPct: 0.3 },
+    { multiplier: 3, action: "💰 3x - Take 25%", sellPct: 0.25 },
+    { multiplier: 5, action: "💰 5x - Take 25%", sellPct: 0.25 },
+    { multiplier: 10, action: "💰 10x - Sell remaining 20%", sellPct: 0.2 },
+  ];
+}
+
+// ─── Dead Position Detection ───────────────────────────────────────────────
+
+export function isDeadPosition(
+  entryPrice: number,
+  currentPrice: number,
+  openedAt: string,
+  timeoutMinutes: number = 30
+): boolean {
+  const elapsed = (Date.now() - new Date(openedAt).getTime()) / 60000;
+  const priceChange = Math.abs(currentPrice - entryPrice) / entryPrice;
+  return elapsed > timeoutMinutes && priceChange < 0.01; // < 1% change
+}
+
+// ─── Record Trade Outcome ─────────────────────────────────────────────────
+
+export interface TradeOutcome {
+  tokenAddress: string;
+  entryPrice: number;
+  exitPrice: number;
+  pnlPercent: number;
+  pnlUsd: number;
+  reason: string;
+}
+
+export function recordTradeOutcome(outcome: TradeOutcome): void {
+  // Log or record the outcome for analysis
+  console.log(`📊 Trade outcome: ${outcome.reason} | PnL: ${outcome.pnlPercent.toFixed(1)}%`);
 }
