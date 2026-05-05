@@ -15,6 +15,8 @@ import { usdToSol }           from "./parity";
 import { analyzeChartShape }  from "../scoring/chart-reader";
 import { recordTradeOutcome, getLadderTargets, isDeadPosition } from "./risk-engine";
 import { emit } from "../events/event-bus";
+import { outcomeLogger } from "../learning/outcome-logger";
+import { v4 as uuidv4 } from "uuid";
 
 export interface Position {
   id:             string;
@@ -301,6 +303,48 @@ async function closePosition(
     pnlPercent: ((currentPrice - pos.entry_price) / pos.entry_price) * 100,
     pnlUsd: pnlUsd,
     reason: reason
+  });
+
+  // Log outcome for learning
+  const holdTime = Math.floor((Date.now() - new Date(pos.opened_at).getTime()) / 1000); // seconds
+  const pnlPercent = ((currentPrice - pos.entry_price) / pos.entry_price) * 100;
+  
+  // Get token symbol from database
+  const { data: tokenData } = await supabase
+    .from('tokens')
+    .select('symbol')
+    .eq('address', tokenAddress)
+    .single();
+  
+  const tokenSymbol = tokenData?.symbol || tokenAddress.slice(0, 4);
+  const walletId = 'default'; // TODO: Get actual wallet ID from position
+  
+  await outcomeLogger.logOutcome({
+    id: uuidv4(),
+    walletId: walletId,
+    token: tokenAddress,
+    entryPrice: pos.entry_price,
+    entryConviction: 70, // TODO: Get from position/trade data
+    entryMode: 'AGGRESSIVE', // TODO: Determine from strategy
+    entrySignals: [], // TODO: Get from position/trade data
+    emotionState: 'CALM',
+    marketRegime: 'HEALTHY',
+    narrativeContext: '',
+    abnormalityScore: 0,
+    exitPrice: currentPrice,
+    exitReason: reason,
+    pnl: pnlUsd,
+    pnlPercent: pnlPercent,
+    holdTime: holdTime,
+    outcome: pnlUsd > 0 ? 'WIN' : pnlUsd < 0 ? 'LOSS' : 'BREAK_EVEN',
+    confidence: 70, // TODO: Get from position/trade data
+    expectedValue: 0, // TODO: Calculate expected value
+    falseLiquiditySignal: false,
+    fakeSocialSignal: false,
+    whaleExitDetected: false,
+    manipulationDetected: false,
+    timestamp: new Date(pos.opened_at).getTime(),
+    completedAt: Date.now(),
   });
 
   await sendExitAlert(tokenAddress, pos, currentPrice, pnlUsd, reason);

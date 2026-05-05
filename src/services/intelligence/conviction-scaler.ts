@@ -2,6 +2,7 @@ import { supabase } from '../../db/supabase';
 import { walletManager } from '../wallet/wallet-manager';
 import { marketMemoryEngine } from './market-memory-engine';
 import { emit } from '../events/event-bus';
+import { confidenceAdjuster } from '../learning/confidence-adjuster';
 
 enum ConvictionMode {
   AGGRESSIVE = 'AGGRESSIVE',   
@@ -68,6 +69,17 @@ class ConvictionScaler {
 
       score = score * regimeDampen;
       score = Math.min(score + memoryBoost, 100);
+
+      // Apply confidence adjustment based on historical performance
+      const adjustment = await confidenceAdjuster.adjustConviction(walletId, score);
+      const adjustedScore = score * adjustment.convictionMultiplier;
+      
+      // If adjusted score falls below threshold, downgrade mode
+      if (adjustedScore < adjustment.confidenceThreshold) {
+        score = adjustment.confidenceThreshold; // Floor at threshold
+      } else {
+        score = adjustedScore;
+      }
 
       const mode = this.getConvictionMode(score);
       const { capital, leverage } = this.getAllocationForMode(mode);

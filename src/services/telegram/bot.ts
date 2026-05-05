@@ -9,6 +9,8 @@ import { TELEGRAM } from '../../core/config';
 import { initializeWalletCommands } from './telegram-wallet-commands';
 import { eventBus } from '../events/event-bus';
 import { signalGateway } from '../gateway/signal-gateway';
+import { outcomeLogger } from '../learning/outcome-logger';
+import { confidenceAdjuster } from '../learning/confidence-adjuster';
 
 export let bot: TelegramBot | null = null;
 
@@ -42,6 +44,9 @@ export async function initializeBot(): Promise<void> {
 
     registerSystemCommands();
     console.log('[Bot] System commands registered');
+
+    registerLearningCommands();
+    console.log('[Bot] Learning commands registered');
 
     // Error handling
     bot.on('polling_error', (error) => {
@@ -222,15 +227,15 @@ ${eventList}
     bot!.sendMessage(msg.chat.id, `
 ℹ️ **CATALYST APEX TRADER**
 ━━━━━━━━━━━━━━━━━━━━━━━━
-Version: 2.0 (Delivery 3)
-System: Signal Architecture
+Version: 2.0 (Delivery 4)
+System: Behavioral Intelligence
 Status: OPERATIONAL ✅
 
 🏗️ Architecture Layers:
   ✅ Wallet Isolation (D1)
   ✅ Event Pipeline (D2)
   ✅ Signal Gateway (D3)
-  ⏳ Outcome Learning (D4)
+  ✅ Outcome Learning (D4)
   ⏳ Intelligence (D5)
   ⏳ Dashboard (D6)
     `.trim(), { parse_mode: 'Markdown' });
@@ -297,6 +302,112 @@ Checks: 9 hardcoded
 }
 
 /**
+ * LEARNING COMMANDS (Delivery 4)
+ */
+function registerLearningCommands(): void {
+  if (!bot) return;
+
+  // /results - Show trading results and statistics
+  bot.onText(/^\/results$/, async (msg) => {
+    try {
+      const stats = await outcomeLogger.getStats('default'); // TODO: Get actual walletId
+      
+      const message = `
+📊 **TRADING RESULTS**
+━━━━━━━━━━━━━━━━━━━━━━━━
+Total Trades: ${stats.totalTrades}
+Wins: ${stats.wins} ✅
+Losses: ${stats.losses} ❌
+Break Even: ${stats.breakEven}
+
+Win Rate: ${(stats.winRate * 100).toFixed(1)}%
+Avg P&L: $${stats.avgPnL.toFixed(2)}
+
+Profit Factor: ${stats.profitFactor.toFixed(2)}
+Sharpe Ratio: ${stats.sharpeRatio.toFixed(2)}
+Avg Hold Time: ${(stats.avgHoldTime / 60).toFixed(1)} min
+      `.trim();
+
+      bot!.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+      console.error('[Bot] Results command error:', error);
+      bot!.sendMessage(msg.chat.id, '❌ Error retrieving results', { parse_mode: 'Markdown' });
+    }
+  });
+
+  // /winners - Show winning signals
+  bot.onText(/^\/winners$/, async (msg) => {
+    try {
+      const winners = await outcomeLogger.getWinningSignals('default', 5);
+      
+      let winnersList = winners
+        .map((w) => `• ${w.signal}: ${(w.winRate * 100).toFixed(0)}% win rate`)
+        .join('\n');
+      
+      if (winnersList.length === 0) winnersList = '(no winning signals yet)';
+
+      const message = `
+🏆 **WINNING SIGNALS**
+━━━━━━━━━━━━━━━━━━━━━━━━
+${winnersList}
+      `.trim();
+
+      bot!.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+      console.error('[Bot] Winners command error:', error);
+      bot!.sendMessage(msg.chat.id, '❌ Error retrieving winners', { parse_mode: 'Markdown' });
+    }
+  });
+
+  // /losers - Show anti-patterns
+  bot.onText(/^\/losers$/, async (msg) => {
+    try {
+      const antiPatterns = await outcomeLogger.getAntiPatterns('default', 5);
+      
+      let patternsList = antiPatterns
+        .map((p) => `• ${p.pattern}: ${p.frequency}x occurrence`)
+        .join('\n');
+      
+      if (patternsList.length === 0) patternsList = '(no anti-patterns detected)';
+
+      const message = `
+⚠️ **ANTI-PATTERNS**
+━━━━━━━━━━━━━━━━━━━━━━━━
+${patternsList}
+      `.trim();
+
+      bot!.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+      console.error('[Bot] Losers command error:', error);
+      bot!.sendMessage(msg.chat.id, '❌ Error retrieving anti-patterns', { parse_mode: 'Markdown' });
+    }
+  });
+
+  // /confidence - Show conviction adjustment
+  bot.onText(/^\/confidence$/, async (msg) => {
+    try {
+      const adjustment = await confidenceAdjuster.adjustConviction('default', 50);
+      
+      const message = `
+📈 **CONVICTION ADJUSTMENT**
+━━━━━━━━━━━━━━━━━━━━━━━━
+Multiplier: ${adjustment.convictionMultiplier.toFixed(2)}x
+Threshold: ${adjustment.confidenceThreshold.toFixed(0)}
+Position Size: ${adjustment.positionSizeMultiplier.toFixed(2)}x
+
+Reason:
+${adjustment.reason}
+      `.trim();
+
+      bot!.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+      console.error('[Bot] Confidence command error:', error);
+      bot!.sendMessage(msg.chat.id, '❌ Error calculating confidence', { parse_mode: 'Markdown' });
+    }
+  });
+}
+
+/**
  * /start - Welcome & full command list
  */
 async function handleStartCommand(msg: any): Promise<void> {
@@ -348,6 +459,12 @@ Event-driven signal architecture
 /trade <token> - Manual entry
 /close <id> - Close position
 /pnl - Total P&L
+
+**Learning** (Delivery 4):
+/results - Trading statistics
+/winners - Winning signals
+/losers - Anti-patterns
+/confidence - Conviction adjustment
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Type /help for full descriptions
@@ -424,6 +541,20 @@ async function handleHelpCommand(msg: any): Promise<void> {
 /close <position_id> - Close position
 /pnl - Total portfolio P&L summary
 
+**📊 LEARNING COMMANDS** (Delivery 4 - Outcome Learning)
+
+/results - Trading statistics & results
+  Shows: Win rate, P&L, profit factor, Sharpe ratio
+
+/winners - Winning signals by win rate
+  Shows: Top signals & their performance
+
+/losers - Anti-patterns that caused losses
+  Shows: Common failure patterns & frequency
+
+/confidence - Conviction adjustment
+  Shows: Current multiplier & adjustment reason
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 **Architecture:**
@@ -434,7 +565,7 @@ async function handleHelpCommand(msg: any): Promise<void> {
   ✅ D1: Wallet Isolation
   ✅ D2: Event Pipeline
   ✅ D3: Signal Gateway (70-80% token reduction)
-  ⏳ D4: Outcome Learning
+  ✅ D4: Outcome Learning (System learns from results)
   ⏳ D5: Intelligence + Execution
   ⏳ D6: Dashboard
 
