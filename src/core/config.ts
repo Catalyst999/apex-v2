@@ -6,7 +6,41 @@
 
 /// <reference types="node" />
 
-import { PublicKey } from '@solana/web3.js';
+import { readFileSync } from 'fs';
+import { Keypair, PublicKey } from '@solana/web3.js';
+
+function loadSolanaKeypair(): Keypair | null {
+  const secretKeyJson = process.env.SOLANA_KEYPAIR_SECRET?.trim();
+  const keyPath = process.env.SOLANA_KEY_PATH?.trim();
+
+  if (secretKeyJson) {
+    try {
+      return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(secretKeyJson)));
+    } catch (error) {
+      console.error('[Config] Invalid SOLANA_KEYPAIR_SECRET:', error);
+    }
+  }
+
+  if (keyPath) {
+    try {
+      const fileContents = readFileSync(keyPath, 'utf8').trim();
+      if (fileContents) {
+        const secretArray = JSON.parse(fileContents);
+        return Keypair.fromSecretKey(Uint8Array.from(secretArray));
+      }
+    } catch (error) {
+      console.error(`[Config] Failed to read SOLANA_KEY_PATH="${keyPath}":`, error);
+    }
+  }
+
+  if (process.env.SOLANA_KEYPAIR_PUBLIC) {
+    console.warn('[Config] SOLANA_KEYPAIR_PUBLIC is set without SOLANA_KEYPAIR_SECRET; public key only is not enough to construct a signing keypair.');
+  }
+
+  return null;
+}
+
+const SOLANA_KEYPAIR = loadSolanaKeypair();
 
 // ============================================================================
 // LEGACY EXPORTS (Backward Compatibility)
@@ -29,10 +63,7 @@ export const SOLANA = {
   priorityFeeLamports: 10000,
   rpcUrl: process.env.RPC_URL || 'https://api.mainnet-beta.solana.com',  // camelCase alias
   wssUrl: process.env.WS_RPC_URL || 'wss://api.mainnet-beta.solana.com', // camelCase alias
-  keypair: {
-    publicKey: new PublicKey(process.env.SOLANA_KEYPAIR_PUBLIC || ''),
-    secretKey: Uint8Array.from(JSON.parse(process.env.SOLANA_KEYPAIR_SECRET || '[]'))
-  }
+  keypair: SOLANA_KEYPAIR,
 };
 
 // HELIUS CONFIG - For Helius API integration

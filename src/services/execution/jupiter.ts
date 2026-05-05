@@ -33,6 +33,10 @@ export async function buyToken(
     console.log(`💰 Amount: $${TRADE_AMOUNT_USD} = ${solAmount.toFixed(6)} SOL`);
 
     // Step 1: Get quote from Jupiter
+    if (!SOLANA.keypair) {
+      throw new Error('Missing Solana keypair configuration. Set SOLANA_KEYPAIR_SECRET or SOLANA_KEY_PATH.');
+    }
+
     const quoteRes = await axios.get(`${JUPITER_API}/quote`, {
       params: {
         inputMint: SOL_MINT,
@@ -106,6 +110,10 @@ export async function sellToken(
     });
 
     const quote = quoteRes.data;
+
+    if (!SOLANA.keypair) {
+      throw new Error('Missing Solana keypair configuration. Set SOLANA_KEYPAIR_SECRET or SOLANA_KEY_PATH.');
+    }
 
     // Step 2: Get swap transaction
     const swapRes = await axios.post(`${JUPITER_API}/swap`, {
