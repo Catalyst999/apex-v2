@@ -7,6 +7,7 @@ import {
 import { Buffer } from "buffer";
 import { SOLANA, TRADE_AMOUNT_USD } from "../../core/config";
 import { usdToSol, solToLamports } from "./parity";
+import { emit } from "../events/event-bus";
 
 const connection = new Connection(SOLANA.RPC_URL, "confirmed");
 const JUPITER_API = "https://quote-api.jup.ag/v6";

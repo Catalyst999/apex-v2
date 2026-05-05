@@ -1,9 +1,15 @@
 // File path: src/services/telegram/telegram-wallet-commands.ts
 
-import TelegramBot from 'node-telegram-bot-api';
+import TelegramBot = require('node-telegram-bot-api');
 import { walletManager } from '../wallet/wallet-manager';
+
+interface TelegramMessage {
+  chat: {
+    id: number | string;
+  };
+}
 import { walletDiscoveryEngine } from '../wallet/wallet-discovery-engine';
-import { WalletStrategyType as WalletStrategy } from '../wallet/wallet-types';
+import { WalletStrategy, WalletStrategyType } from '../wallet/wallet-types';
 
 export class TelegramWalletCommands {
   private bot: TelegramBot;
@@ -30,7 +36,7 @@ export class TelegramWalletCommands {
   /**
    * /wallet - Show current selected wallet
    */
-  private async handleGetWallet(msg: any): Promise<void> {
+  private async handleGetWallet(msg: TelegramMessage): Promise<void> {
     const chatId = msg.chat.id;
     const selectedId = walletManager.getSelectedWalletId();
 
@@ -56,7 +62,7 @@ Active: ${context.wallet.is_active ? '✅' : '❌'}
 📈 **Performance**
 PnL: $${context.pnl_usd.toFixed(2)}
 Win Rate: ${(context.win_rate * 100).toFixed(1)}%
-Trades: ${context.analytics?.total_trades || 0}
+Trades: ${context.analytics?.total_trades ?? 0}
 
 ⚙️ **Limits**
 Max Positions: ${context.max_positions}
@@ -72,7 +78,7 @@ Max Leverage: ${context.max_leverage}x
   /**
    * /wallets - List all wallets
    */
-  private async handleListWallets(msg: any): Promise<void> {
+  private async handleListWallets(msg: TelegramMessage): Promise<void> {
     const chatId = msg.chat.id;
 
     try {
@@ -105,7 +111,7 @@ Trades: ${analytics?.total_trades || 0}
    * /add_wallet <address> <strategy> <tags>
    */
   private async handleAddWallet(
-    msg: any,
+    msg: TelegramMessage,
     match: RegExpExecArray | null
   ): Promise<void> {
     const chatId = msg.chat.id;
@@ -119,7 +125,7 @@ Trades: ${analytics?.total_trades || 0}
     const tags = match[3]?.trim() || 'custom';
 
     try {
-      const strategy = strategyStr as WalletStrategy;
+      const strategy = WalletStrategy[strategyStr as keyof typeof WalletStrategy] as WalletStrategyType;
       const wallet = await walletManager.createWallet(address, strategy, tags);
       await walletManager.selectWallet(wallet.id);
 
@@ -137,7 +143,7 @@ Trades: ${analytics?.total_trades || 0}
    * /select_wallet <address>
    */
   private async handleSelectWallet(
-    msg: any,
+    msg: TelegramMessage,
     match: RegExpExecArray | null
   ): Promise<void> {
     const chatId = msg.chat.id;
@@ -166,7 +172,7 @@ Trades: ${analytics?.total_trades || 0}
    * /tag_wallet <address> <tags>
    */
   private async handleTagWallet(
-    msg: any,
+    msg: TelegramMessage,
     match: RegExpExecArray | null
   ): Promise<void> {
     const chatId = msg.chat.id;
@@ -195,7 +201,7 @@ Trades: ${analytics?.total_trades || 0}
    * /strategy <address> <strategy>
    */
   private async handleSetStrategy(
-    msg: any,
+    msg: TelegramMessage,
     match: RegExpExecArray | null
   ): Promise<void> {
     const chatId = msg.chat.id;
@@ -211,7 +217,7 @@ Trades: ${analytics?.total_trades || 0}
         return;
       }
 
-      const strategy = match[2].toUpperCase() as WalletStrategy;
+      const strategy = WalletStrategy[match[2].toUpperCase() as keyof typeof WalletStrategy] as WalletStrategyType;
       await walletManager.updateWalletStrategy(wallet.id, strategy);
 
       this.bot.sendMessage(chatId, `✅ Strategy updated to: ${strategy}`);
@@ -223,7 +229,7 @@ Trades: ${analytics?.total_trades || 0}
   /**
    * /discoveries - Show pending wallet discoveries
    */
-  private async handlePendingDiscoveries(msg: any): Promise<void> {
+  private async handlePendingDiscoveries(msg: TelegramMessage): Promise<void> {
     const chatId = msg.chat.id;
 
     try {

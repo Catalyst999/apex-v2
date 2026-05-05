@@ -14,6 +14,7 @@ import { STRATEGY, TRADE_AMOUNT_USD } from "../../core/config";
 import { usdToSol }           from "./parity";
 import { analyzeChartShape }  from "../scoring/chart-reader";
 import { recordTradeOutcome, getLadderTargets, isDeadPosition } from "./risk-engine";
+import { emit } from "../events/event-bus";
 
 export interface Position {
   id:             string;
@@ -65,7 +66,20 @@ export async function openPosition(
     });
 
     if (error) console.error("❌ DB insert error:", error.message);
-    else console.log(`✅ Position opened — $${tradeAmount} at $${entryPrice}`);
+    else {
+      console.log(`✅ Position opened — $${tradeAmount} at $${entryPrice}`);
+
+      // Emit TRADE_EXECUTED event
+      await emit({
+        type: 'TRADE_EXECUTED',
+        token: tokenMint,
+        walletId: '', // TODO: Get from context
+        entryPrice,
+        positionSize: tradeAmount,
+        leverage: 1.0,
+        timestamp: Date.now(),
+      });
+    }
 
   } catch (err: any) {
     console.error("❌ openPosition error:", err.message);
@@ -264,6 +278,20 @@ async function closePosition(
     pnl_usd:    pnlUsd,
     closed_at:  new Date().toISOString(),
   }).eq("id", pos.id);
+
+  // Emit TRADE_CLOSED event
+  await emit({
+    type: 'TRADE_CLOSED',
+    tradeId: pos.id,
+    token: tokenAddress,
+    walletId: '', // TODO: Get from pos
+    entryPrice: pos.entry_price,
+    exitPrice: currentPrice,
+    pnl: pnlUsd,
+    pnlPercent: ((currentPrice - pos.entry_price) / pos.entry_price) * 100,
+    reason: reason,
+    timestamp: Date.now(),
+  });
 
   // Record outcome in risk engine
   recordTradeOutcome({

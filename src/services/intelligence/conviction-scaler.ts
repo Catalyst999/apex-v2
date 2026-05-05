@@ -1,6 +1,7 @@
 import { supabase } from '../../db/supabase';
 import { walletManager } from '../wallet/wallet-manager';
 import { marketMemoryEngine } from './market-memory-engine';
+import { emit } from '../events/event-bus';
 
 enum ConvictionMode {
   AGGRESSIVE = 'AGGRESSIVE',   
@@ -83,6 +84,16 @@ class ConvictionScaler {
       await this.logConviction(walletId, result);
       if (!this.convictionHistory.has(walletId)) this.convictionHistory.set(walletId, []);
       this.convictionHistory.get(walletId)!.push(result);
+
+      // Emit CONVICTION_CALCULATED event
+      await emit({
+        type: 'CONVICTION_CALCULATED',
+        token: '', // Token not specified in this context
+        walletId,
+        conviction: result.score,
+        mode: result.mode,
+        timestamp: Date.now(),
+      });
 
       return result;
     } catch (error) {

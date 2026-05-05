@@ -17,6 +17,7 @@
 
 import axios from "axios";
 import { HELIUS, FEATURE_FLAGS } from "../../core/config";
+import { emit } from "../events/event-bus";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -298,6 +299,17 @@ async function scanRaydium(): Promise<OnChainSignal[]> {
 
     newPools.push(pool);
     processedPools.add(pool.tokenAddress);
+
+    // Emit TOKEN_DETECTED event
+    await emit({
+      type: 'TOKEN_DETECTED',
+      token: pool.tokenAddress,
+      mint: pool.tokenAddress,
+      name: 'Unknown', // TODO: Fetch from DexScreener
+      symbol: 'UNK',
+      timestamp: Date.now(),
+      source: 'raydium'
+    });
   }
 
   console.log(`   🆕 Raydium: ${newPools.length} new pools`);
@@ -345,6 +357,16 @@ async function scanRaydium(): Promise<OnChainSignal[]> {
       continue;
     }
     if (liqGrowth.growing) {
+      // Emit LIQUIDITY_SPIKE event
+      await emit({
+        type: 'LIQUIDITY_SPIKE',
+        token: pool.tokenAddress,
+        liquidityBefore: pool.initialSol,
+        liquidityAfter: pool.initialSol * (1 + liqGrowth.addCount * 0.1), // Estimate
+        percentChange: liqGrowth.addCount * 10, // Estimate
+        timestamp: Date.now(),
+      });
+
       signals.push({
         tokenAddress: pool.tokenAddress, signalType: "LIQUIDITY_GROWTH",
         confidence: Math.min(100, liqGrowth.addCount * 20 + 30),
@@ -398,6 +420,17 @@ async function scanPumpFun(): Promise<OnChainSignal[]> {
 
     newPumpTokens.push(token);
     processedPumps.add(token.tokenAddress);
+
+    // Emit TOKEN_DETECTED event
+    await emit({
+      type: 'TOKEN_DETECTED',
+      token: token.tokenAddress,
+      mint: token.tokenAddress,
+      name: 'Unknown', // TODO: Fetch from Pump.fun API
+      symbol: 'UNK',
+      timestamp: Date.now(),
+      source: 'pumpfun'
+    });
   }
 
   for (const token of newPumpTokens) {
