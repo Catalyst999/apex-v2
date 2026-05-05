@@ -1,20 +1,19 @@
-// src/services/scoring/router-updated.ts
+// File path: src/services/scoring/router.ts
 // Catalyst Apex Trader v3.0 — Signal Router
 // 
 // Updated with:
+// - Wallet context awareness
 // - Market regime dampening
 // - No-trade intelligence
 // - Behavioral intelligence integration
 // - Conviction-based routing
 //
 // This replaces the existing router.ts
-// Keep all existing logic, ADD these enhancements
 
 import { FEATURE_FLAGS, MARKET_REGIME, CONVICTION_THRESHOLDS } from "../../core/config";
 import { calculateConvictionMode, AlignmentScore } from "../intelligence/conviction-scaler";
 import { detectEmotionPhase, PhaseIndicators } from "../intelligence/emotion-modeler";
-import { assessPvPSafety } from "../intelligence/pvp-survival-detector";
-import { detectFakeBreakout, detectExitLiquidityTrap } from "../intelligence/pvp-survival-detector";
+import { walletManager } from "../wallet/wallet-manager";
 
 export interface RoutingDecision {
   shouldTrade: boolean;
@@ -23,6 +22,7 @@ export interface RoutingDecision {
   convictionMode: string;
   recommendedPositionSize: number; // % of capital
   recommendedLeverage: number;
+  walletId?: string;
 }
 
 // ─── Market Regime Detection ──────────────────────────────────────────────
@@ -91,6 +91,14 @@ export async function routeSignal(
   emotionPhaseIndicators: PhaseIndicators,
 ): Promise<RoutingDecision> {
   const reasons: string[] = [];
+  
+  // Get wallet context if selected
+  const walletId = walletManager.getSelectedWalletId() ?? undefined;
+  const walletContext = walletId ? await walletManager.getWalletContext(walletId) : null;
+
+  if (walletContext) {
+    reasons.push(`💼 Wallet: ${walletContext.wallet.strategy} | PnL: $${walletContext.pnl_usd}`);
+  }
 
   // ─── Step 1: Market Regime Check ──────────────────────────────────────
 
@@ -115,6 +123,7 @@ export async function routeSignal(
         convictionMode: "INACTIVE",
         recommendedPositionSize: 0,
         recommendedLeverage: 1,
+        walletId,
       };
     }
   }
@@ -156,65 +165,34 @@ export async function routeSignal(
       convictionMode: "INACTIVE",
       recommendedPositionSize: 0,
       recommendedLeverage: 1,
+      walletId,
     };
   }
 
-  // ─── Step 3: PvP Warfare Detection ────────────────────────────────────
+  // ─── Step 3: Wallet Risk Check ────────────────────────────────────────
 
-  let shouldSkipPvP = false;
-  if (FEATURE_FLAGS.usePvpSurvivalDetector) {
-    // Check for fake breakout (example)
-    const priceHistory = signal.priceHistory || [];
-    const volumeHistory = signal.volumeHistory || [];
-    const liquidityHistory = signal.liquidityHistory || [];
-    const holderHistory = signal.holderHistory || [];
+  if (walletContext) {
+    const riskProfile = await walletManager.getRiskProfile(walletId!);
+    if (riskProfile) {
+      // Check if wallet has hit daily loss limit
+      if (riskProfile.current_daily_loss_usd >= riskProfile.max_daily_loss_usd) {
+        return {
+          shouldTrade: false,
+          reason: `🛑 Wallet daily loss limit reached ($${riskProfile.max_daily_loss_usd})`,
+          severity: "SKIP",
+          convictionMode: "INACTIVE",
+          recommendedPositionSize: 0,
+          recommendedLeverage: 1,
+          walletId,
+        };
+      }
 
-    if (priceHistory.length >= 5) {
-      const fakeBreakout = detectFakeBreakout(
-        priceHistory,
-        volumeHistory,
-        liquidityHistory,
-        holderHistory,
-      );
-
-      if (fakeBreakout && fakeBreakout.safetyRating === "LETHAL") {
-        shouldSkipPvP = true;
-        reasons.push(`🚨 PvP Skip: ${fakeBreakout.recommendedAction}`);
-      } else if (fakeBreakout && fakeBreakout.safetyRating === "DANGER") {
+      // Check if wallet has max positions
+      if (walletContext.current_positions >= walletContext.max_positions) {
+        reasons.push(`⚠️ Wallet at max positions (${walletContext.max_positions})`);
         convictionMultiplier *= 0.5;
-        reasons.push(`⚠️ Conviction halved: ${fakeBreakout.recommendedAction}`);
       }
     }
-
-    // Check for exit traps
-    if (!shouldSkipPvP && holderHistory.length > 0) {
-      const exitTrap = detectExitLiquidityTrap(
-        priceHistory,
-        signal.buys || 0,
-        signal.sells || 0,
-        signal.liquidityAddedRecently || false,
-        signal.holderConcentration || 0,
-      );
-
-      if (exitTrap && exitTrap.safetyRating === "LETHAL") {
-        shouldSkipPvP = true;
-        reasons.push(`🚨 PvP Skip: ${exitTrap.recommendedAction}`);
-      } else if (exitTrap && exitTrap.safetyRating === "DANGER") {
-        convictionMultiplier *= 0.6;
-        reasons.push(`⚠️ Conviction reduced: Exit trap detected`);
-      }
-    }
-  }
-
-  if (shouldSkipPvP) {
-    return {
-      shouldTrade: false,
-      reason: reasons.join(" | "),
-      severity: "SKIP",
-      convictionMode: "INACTIVE",
-      recommendedPositionSize: 0,
-      recommendedLeverage: 1,
-    };
   }
 
   // ─── Step 4: Conviction Scaling ──────────────────────────────────────
@@ -286,6 +264,7 @@ export async function routeSignal(
     convictionMode: conviction.mode,
     recommendedPositionSize: conviction.maxPositionSize ?? 10,
     recommendedLeverage: conviction.leverage,
+    walletId,
   };
 }
 
@@ -309,6 +288,7 @@ export function explainTrade(decision: RoutingDecision): string {
   const lines = [
     `✅ TRADE APPROVED`,
     ``,
+    `Wallet: ${decision.walletId || "default"}`,
     `Mode: ${decision.convictionMode}`,
     `Position size: ${decision.recommendedPositionSize}% of capital`,
     `Leverage: ${decision.recommendedLeverage}x`,

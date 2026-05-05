@@ -1,11 +1,12 @@
+// File path: src/services/telegram/bot.ts
 /**
- * TELEGRAM BOT - DELIVERY 1 READY
- * Main bot initialization with basic commands
- * Wallet commands can be added in Delivery 2
+ * TELEGRAM BOT - DELIVERY 1: WALLET ISOLATION
+ * Main bot initialization with basic commands + wallet commands
  */
 
 import TelegramBot from 'node-telegram-bot-api';
 import { TELEGRAM } from '../../core/config';
+import { initializeWalletCommands } from './telegram-wallet-commands';
 
 export let bot: TelegramBot | null = null;
 
@@ -25,6 +26,12 @@ export async function initializeBot(): Promise<void> {
     // Register basic commands
     registerBasicCommands();
     console.log('[Bot] Basic commands registered');
+
+    // Register wallet commands (Delivery 1)
+    if (bot) {
+      initializeWalletCommands(bot);
+      console.log('[Bot] Wallet commands registered');
+    }
 
     // Error handling
     bot.on('polling_error', (error) => {
@@ -107,7 +114,7 @@ Per-wallet learning & risk management
 ✅ Pattern Anticipation
 ✅ PvP Survival Detector
 ✅ Narrative Rotation Tracker
-✅ Wallet Isolation (Coming Soon)
+✅ Wallet Isolation (LIVE)
 
 System ready. 🎯
   `.trim();
@@ -135,19 +142,23 @@ async function handleHelpCommand(msg: any): Promise<void> {
 /pause - Pause trading
 /resume - Resume trading
 
-**Info**
-/help - Show this message
-/start - Welcome message
+**Wallet Management (Delivery 1)**
+/wallet - Show current wallet
+/wallets - List all wallets
+/add_wallet <addr> <CONSERVATIVE|AGGRESSIVE|EXPERIMENTAL> <tag> - Add wallet
+/select_wallet <addr> - Switch wallet
+/tag_wallet <addr> <tag1,tag2> - Tag wallet
+/strategy <addr> <CONSERVATIVE|AGGRESSIVE|EXPERIMENTAL> - Change strategy
+/discoveries - Show pending wallet discoveries
 
 **Coming in Delivery 2:**
-/wallet - Active wallet info
-/wallets - List all wallets
-/add_wallet <addr> <strat> <tag> - Add wallet
-/select_wallet <addr> - Switch wallet
-/tag_wallet <addr> <tag> - Retag wallet
-/strategy <addr> <strat> - Override strategy
-/trade - Manual entry
-/close - Close position
+/regime - Current market phase
+/insider <token> - Insider momentum
+/beast - Beast mode candidates
+/patterns <token> - Pattern matches
+/positions - Active positions
+/trade <token> - Manual entry
+/close <position_id> - Close position
 
 ---
 System: Operational ✅
