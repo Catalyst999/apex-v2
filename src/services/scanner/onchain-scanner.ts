@@ -18,6 +18,7 @@
 import axios from "axios";
 import { HELIUS, FEATURE_FLAGS } from "../../core/config";
 import { emit } from "../events/event-bus";
+import { signalGateway } from "../gateway/signal-gateway";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -300,16 +301,32 @@ async function scanRaydium(): Promise<OnChainSignal[]> {
     newPools.push(pool);
     processedPools.add(pool.tokenAddress);
 
-    // Emit TOKEN_DETECTED event
-    await emit({
-      type: 'TOKEN_DETECTED',
-      token: pool.tokenAddress,
+    // DELIVERY 3: Filter through Signal Gateway before emitting
+    const gatewayDecision = await signalGateway.shouldAnalyze({
+      address: pool.tokenAddress,
       mint: pool.tokenAddress,
       name: 'Unknown', // TODO: Fetch from DexScreener
       symbol: 'UNK',
-      timestamp: Date.now(),
-      source: 'raydium'
+      liquidity: { usd: pool.initialSol * 200, depth: pool.initialSol * 100 }, // Estimate
+      deployer: pool.deployer,
+      createdAt: pool.poolCreatedAt,
+      volume: { m5: 0, h1: 0 }, // TODO: Fetch actual volume
+      buys: { m5: 0 },
+      sells: { m5: 0 },
     });
+
+    if (gatewayDecision.passed) {
+      // Only emit TOKEN_DETECTED if gateway approves
+      await emit({
+        type: 'TOKEN_DETECTED',
+        token: pool.tokenAddress,
+        mint: pool.tokenAddress,
+        name: 'Unknown',
+        symbol: 'UNK',
+        timestamp: Date.now(),
+        source: 'raydium'
+      });
+    }
   }
 
   console.log(`   🆕 Raydium: ${newPools.length} new pools`);
@@ -421,16 +438,32 @@ async function scanPumpFun(): Promise<OnChainSignal[]> {
     newPumpTokens.push(token);
     processedPumps.add(token.tokenAddress);
 
-    // Emit TOKEN_DETECTED event
-    await emit({
-      type: 'TOKEN_DETECTED',
-      token: token.tokenAddress,
+    // DELIVERY 3: Filter through Signal Gateway before emitting
+    const gatewayDecision = await signalGateway.shouldAnalyze({
+      address: token.tokenAddress,
       mint: token.tokenAddress,
       name: 'Unknown', // TODO: Fetch from Pump.fun API
       symbol: 'UNK',
-      timestamp: Date.now(),
-      source: 'pumpfun'
+      liquidity: { usd: token.initialSol * 200, depth: token.initialSol * 100 },
+      deployer: token.deployer,
+      createdAt: token.createdAt,
+      volume: { m5: 0, h1: 0 }, // TODO: Fetch actual volume
+      buys: { m5: 0 },
+      sells: { m5: 0 },
     });
+
+    if (gatewayDecision.passed) {
+      // Only emit TOKEN_DETECTED if gateway approves
+      await emit({
+        type: 'TOKEN_DETECTED',
+        token: token.tokenAddress,
+        mint: token.tokenAddress,
+        name: 'Unknown',
+        symbol: 'UNK',
+        timestamp: Date.now(),
+        source: 'pumpfun'
+      });
+    }
   }
 
   for (const token of newPumpTokens) {
