@@ -1,6 +1,7 @@
 // File path: src/services/wallet/wallet-manager.ts
 
 import { supabase } from '../../core/db/supabase';
+import { WALLET_CONFIG } from '../../core/config';
 import { Wallet, WalletStrategy, WalletStrategyType, WalletContext, WalletAnalytics, WalletRiskProfile } from './wallet-types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -86,6 +87,21 @@ export class WalletManager {
 
     if (error && error.code !== 'PGRST116') throw error;
     return data || null;
+  }
+
+  /**
+   * Validate wallet isolation and current wallet context
+   */
+  async validateIsolation(walletId: string, context: string = ''): Promise<boolean> {
+    const wallet = await this.getWallet(walletId);
+    if (!wallet || !wallet.is_active) return false;
+
+    if (WALLET_CONFIG.ISOLATION_STRICT) {
+      if (!this.selectedWalletId) return false;
+      if (this.selectedWalletId !== walletId) return false;
+    }
+
+    return true;
   }
 
   /**
