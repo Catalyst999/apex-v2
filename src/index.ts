@@ -8,6 +8,7 @@ import { supabase }    from "./db/supabase";
 import { startBot, sendAlert }    from "./services/telegram/bot";
 import { eventBus } from "./services/events/event-bus";
 import { scanOnChain } from "./services/scanner/onchain-scanner";
+import { TokenDetectedEvent } from "./services/events/signal-types";
 
 async function boot() {
   printConfig();
@@ -24,13 +25,14 @@ async function boot() {
   // Subscribe to signal events for alerts
   eventBus.subscribe('TOKEN_DETECTED', async (event) => {
     if (event.type !== 'TOKEN_DETECTED') return;
+    const detected = event as TokenDetectedEvent;
 
     const message = `
 🚨 **TRADING SIGNAL DETECTED**
 
-📍 Token: \`${event.token || event.mint}\`
-🔍 Source: ${event.source || 'unknown'}
-⏰ Time: ${new Date(event.timestamp).toLocaleTimeString()}
+📍 Token: \`${detected.token || detected.mint}\`
+🔍 Source: ${detected.source || 'unknown'}
+⏰ Time: ${new Date(detected.timestamp).toLocaleTimeString()}
 
 Signal detected and logged for analysis.
     `.trim();

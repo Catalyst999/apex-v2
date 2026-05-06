@@ -4,28 +4,42 @@
   "main": "dist/index.js",
   "scripts": {
     "start": "npx ts-node src/index.ts",
-    "build": "tsc",
-    "dev": "npx ts-node src/index.ts"
+    "build:backend": "tsc -p tsconfig.backend.json",
+    "build:frontend": "next build",
+    "build": "npm run build:backend && npm run build:frontend",
+    "dev:backend": "npx ts-node src/index.ts",
+    "dev:frontend": "next dev",
+    "dev": "npm run dev:backend"
   },
   "keywords": [],
   "author": "Catalyst",
   "license": "ISC",
   "description": "APEX v2 — AI Memecoin Trading Bot",
   "dependencies": {
+    "@alloc/quick-lru": "^5.2.0",
     "@jup-ag/api": "^6.0.21",
     "@solana/web3.js": "^1.91.0",
     "@supabase/supabase-js": "^2.39.8",
+    "@tailwindcss/node": "^4.2.4",
+    "@tailwindcss/oxide": "^4.2.4",
+    "@types/node-telegram-bot-api": "^0.64.14",
     "axios": "^1.6.8",
     "dotenv": "^16.4.5",
     "ethers": "^6.11.1",
     "express": "^4.22.1",
-    "telegraf": "^4.16.3",
+    "next": "^15.0.0",
     "node-telegram-bot-api": "^0.67.0",
-    "@types/node-telegram-bot-api": "^0.64.14"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.4",
     "@types/express": "^4.17.25",
     "@types/node": "^20.19.39",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "^18.3.0",
+    "tailwindcss": "^4.2.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.0.0"
   },

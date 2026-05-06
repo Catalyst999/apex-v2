@@ -177,6 +177,22 @@ export interface TradeSignalEvent {
   timestamp: number;
 }
 
+export interface SignalFilteredEvent {
+  type: 'SIGNAL_FILTERED';
+  token: string;
+  conviction: number;
+  timestamp: number;
+  reason?: string;
+}
+
+export interface SignalWatchedEvent {
+  type: 'SIGNAL_WATCHED';
+  token: string;
+  conviction: number;
+  timestamp: number;
+  reason?: string;
+}
+
 // ─── Outcome Events ─────────────────────────────────────────────────────
 
 export interface TradeExecutedEvent {
@@ -252,6 +268,8 @@ export type SignalEvent =
   | LiquidityCollapseEvent
   | ConvictionCalculatedEvent
   | TradeSignalEvent
+  | SignalFilteredEvent
+  | SignalWatchedEvent
   | TradeExecutedEvent
   | TradeClosedEvent
   | OutcomeLoggedEvent

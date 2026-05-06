@@ -220,7 +220,7 @@ class ConvictionScaler {
 }
 
 export const convictionScaler = new ConvictionScaler();
-export { ConvictionMode, ConvictionResult, ConvictionSignals };
+export type { ConvictionMode, ConvictionResult, ConvictionSignals };
 
 // Aliases for compatibility with risk-engine imports
 export type ConvictionScaledRisk = ConvictionResult;
