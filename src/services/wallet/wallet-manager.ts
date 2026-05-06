@@ -294,6 +294,32 @@ export class WalletManager {
   }
 
   /**
+   * Update wallet position count.
+   * This is currently a placeholder for future position count tracking.
+   */
+  async updatePositionCount(walletId: string, delta: number): Promise<void> {
+    const analytics = await this.getAnalytics(walletId);
+    if (!analytics) return;
+    // No persistent current_positions field exists yet in analytics.
+    // Implement position count tracking in analytics schema if needed.
+  }
+
+  async updatePnL(walletId: string, pnl: number): Promise<void> {
+    const analytics = await this.getAnalytics(walletId);
+    if (!analytics) return;
+
+    const { error } = await supabase
+      .from('wallet_analytics')
+      .update({
+        total_pnl_usd: analytics.total_pnl_usd + pnl,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('wallet_id', walletId);
+
+    if (error) throw new Error(`Failed to update wallet PnL: ${error.message}`);
+  }
+
+  /**
    * Update analytics after trade
    */
   async updateAnalyticsAfterTrade(

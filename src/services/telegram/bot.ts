@@ -48,14 +48,74 @@ export async function initializeBot(): Promise<void> {
     registerLearningCommands();
     console.log('[Bot] Learning commands registered');
 
+    // Set bot commands for Telegram menu
+    await setBotCommands();
+    console.log('[Bot] Commands set in Telegram menu');
+
     // Error handling
     bot.on('polling_error', (error) => {
       console.error('[Bot] Polling error:', error.message);
     });
 
-    console.log('[Bot] ✅ All commands ready');
+    console.log('[Bot] ✅ Ready for Telegram commands');
   } catch (error) {
     console.error('[Bot] Initialization error:', error);
+  }
+}
+
+/**
+ * Set bot commands for Telegram menu
+ */
+async function setBotCommands(): Promise<void> {
+  if (!bot) return;
+
+  const commands = [
+    // System commands
+    { command: 'start', description: 'Welcome & command guide' },
+    { command: 'help', description: 'Complete command reference' },
+    { command: 'status', description: 'System status' },
+    { command: 'pause', description: 'Pause trading' },
+    { command: 'resume', description: 'Resume trading' },
+    { command: 'stats', description: 'System statistics' },
+    { command: 'events', description: 'Recent signal events' },
+    { command: 'info', description: 'System information' },
+
+    // Gateway commands
+    { command: 'gateway_stats', description: 'Filter statistics' },
+    { command: 'gateway_history', description: 'Recent decisions' },
+    { command: 'gateway_config', description: 'Filter configuration' },
+
+    // Wallet commands
+    { command: 'wallet', description: 'Current wallet' },
+    { command: 'wallets', description: 'List all wallets' },
+    { command: 'add_wallet', description: 'Add new wallet' },
+    { command: 'select_wallet', description: 'Switch wallet' },
+    { command: 'discoveries', description: 'Pending discoveries' },
+
+    // Intelligence commands
+    { command: 'regime', description: 'Market regime' },
+    { command: 'insider', description: 'Insider momentum' },
+    { command: 'beast', description: 'Beast mode candidates' },
+    { command: 'patterns', description: 'Pattern matches' },
+
+    // Execution commands
+    { command: 'positions', description: 'Active positions' },
+    { command: 'trade', description: 'Manual entry' },
+    { command: 'close', description: 'Close position' },
+    { command: 'pnl', description: 'Total P&L' },
+
+    // Learning commands
+    { command: 'results', description: 'Trading statistics' },
+    { command: 'winners', description: 'Winning signals' },
+    { command: 'losers', description: 'Anti-patterns' },
+    { command: 'confidence', description: 'Conviction adjustment' },
+  ];
+
+  try {
+    await bot.setMyCommands(commands);
+    console.log('[Bot] Commands registered with Telegram');
+  } catch (error) {
+    console.error('[Bot] Failed to set commands:', error);
   }
 }
 

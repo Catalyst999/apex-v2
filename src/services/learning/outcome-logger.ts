@@ -14,7 +14,7 @@ export interface TradeOutcome {
   token: string;
   entryPrice: number;
   entryConviction: number;
-  entryMode: 'AGGRESSIVE' | 'CAUTIOUS' | 'DEFENSIVE' | 'OBSERVATION';
+  entryMode: 'AGGRESSIVE' | 'CAUTIOUS' | 'DEFENSIVE' | 'OBSERVATION' | 'INACTIVE';
   entrySignals: string[]; // which signals fired
   emotionState: string;
   marketRegime: string;

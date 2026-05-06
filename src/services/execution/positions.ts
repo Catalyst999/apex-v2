@@ -16,6 +16,7 @@ import { analyzeChartShape }  from "../scoring/chart-reader";
 import { recordTradeOutcome, getLadderTargets, isDeadPosition } from "./risk-engine";
 import { emit } from "../events/event-bus";
 import { outcomeLogger } from "../learning/outcome-logger";
+import { sendTradeNotification, sendAlert } from "../telegram/bot";
 import { v4 as uuidv4 } from "uuid";
 
 export interface Position {
@@ -70,6 +71,9 @@ export async function openPosition(
     if (error) console.error("❌ DB insert error:", error.message);
     else {
       console.log(`✅ Position opened — $${tradeAmount} at $${entryPrice}`);
+
+      // Send trade notification
+      await sendTradeNotification(tokenMint, entryPrice, 70); // TODO: Get actual conviction
 
       // Emit TRADE_EXECUTED event
       await emit({
@@ -360,26 +364,19 @@ async function sendExitAlert(
   pnlUsd:       number,
   reason:       string,
 ): Promise<void> {
-  try {
-    const axios       = (await import("axios")).default;
-    const { TELEGRAM } = await import("../../core/config");
-    const pnlEmoji    = pnlUsd >= 0 ? "✅" : "🔴";
+  const pnlEmoji = pnlUsd >= 0 ? "✅" : "🔴";
 
-    const message = `
-${pnlEmoji} *POSITION UPDATE*
+  const message = `
+${pnlEmoji} **POSITION CLOSED**
 
 📍 \`${tokenAddress.slice(0, 20)}...\`
 💰 PnL: ${pnlUsd >= 0 ? "+" : ""}$${pnlUsd.toFixed(2)}
 📊 Entry: $${pos.entry_price?.toFixed(8)}
-📊 Exit:  $${currentPrice.toFixed(8)}
+📊 Exit: $${currentPrice.toFixed(8)}
 📝 ${reason}
-    `.trim();
+  `.trim();
 
-    await axios.post(
-      `https://api.telegram.org/bot${TELEGRAM.botToken}/sendMessage`,
-      { chat_id: TELEGRAM.chatId, text: message, parse_mode: "Markdown" }
-    );
-  } catch {}
+  await sendAlert(message);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
