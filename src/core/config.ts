@@ -426,3 +426,87 @@ export function printConfig(): void {
 ╚════════════════════════════════════════════════════════════╝
   `);
 }
+
+// FILE: config.ts.patch
+// LOCATION: src/core/config.ts
+// ACTION: Add these sections to the existing config.ts file
+
+// ============================================================================
+// HYBRID RPC CONFIGURATION (NEW SECTION)
+// Add after HELIUS config section
+// ============================================================================
+
+export const HYBRID_RPC = {
+  // Public RPC (fallback, background scanning)
+  PUBLIC_RPC_URL: process.env.PUBLIC_RPC_URL || 'https://api.mainnet-beta.solana.com',
+  
+  // Helius Websocket (real-time monitoring)
+  HELIUS_WEBSOCKET_ENABLED: process.env.HELIUS_WEBSOCKET_ENABLED !== 'false',
+  
+  // Helius RPC (selective enrichment)
+  HELIUS_ENRICHMENT_ENABLED: process.env.HELIUS_ENRICHMENT_ENABLED !== 'false',
+  HELIUS_ENRICHMENT_CONVICTION_THRESHOLD: parseFloat(process.env.HELIUS_CONVICTION_THRESHOLD || '75'),
+  
+  // DexScreener (market data)
+  DEXSCREENER_ENABLED: process.env.DEXSCREENER_ENABLED !== 'false',
+  
+  // RPC request throttling
+  RPC_COOLDOWN_MS: parseInt(process.env.RPC_COOLDOWN_MS || '500'),
+  RPC_MAX_RETRIES: parseInt(process.env.RPC_MAX_RETRIES || '3'),
+  RPC_BATCH_SIZE: parseInt(process.env.RPC_BATCH_SIZE || '10'),
+  RPC_CONCURRENT_LIMIT: parseInt(process.env.RPC_CONCURRENT_LIMIT || '3'),
+  
+  // Request urgency routing
+  URGENT_TIMEOUT_MS: parseInt(process.env.URGENT_TIMEOUT_MS || '5000'),
+  BACKGROUND_TIMEOUT_MS: parseInt(process.env.BACKGROUND_TIMEOUT_MS || '30000'),
+  
+  // Circuit breaker
+  CIRCUIT_BREAKER_COOLDOWN_MS: parseInt(process.env.CIRCUIT_BREAKER_MS || '60000'),
+  CIRCUIT_BREAKER_TRIP_THRESHOLD: parseInt(process.env.CIRCUIT_BREAKER_TRIPS || '5'),
+};
+
+// ============================================================================
+// SYSTEM MODE & TRADING CONFIGURATION (NEW SECTION)
+// Add after EXECUTION config section
+// ============================================================================
+
+export const SYSTEM = {
+  // System mode: shadow (local testing), paper (simulation), live (real)
+  SYSTEM_MODE: (process.env.SYSTEM_MODE || 'shadow') as 'shadow' | 'paper' | 'live',
+  
+  // Paper trading (simulated execution)
+  ENABLE_PAPER_TRADING: process.env.ENABLE_PAPER_TRADING === 'true',
+  ENABLE_AUTO_TRADING: process.env.ENABLE_AUTO_TRADING === 'true',
+  
+  // Trading controls
+  TRADING_PAUSED: process.env.TRADING_PAUSED === 'true',
+  LIVE_TRADING: process.env.LIVE_TRADING === 'true',
+  DRY_RUN: process.env.DRY_RUN !== 'false',
+  
+  // Mode-specific behaviors
+  REQUIRE_MANUAL_APPROVAL: (process.env.SYSTEM_MODE || 'shadow') !== 'live',
+  SIMULATE_EXECUTION: process.env.DRY_RUN === 'true',
+};
+
+// ============================================================================
+// REVIVAL ENGINE CONFIGURATION (SIMPLIFIED)
+// Add after INTELLIGENCE config section
+// ============================================================================
+
+export const REVIVAL_ENGINE = {
+  // Enable/disable
+  ENABLE_REVIVAL_ENGINE: process.env.ENABLE_REVIVAL_ENGINE !== 'false',
+  
+  // Dormancy threshold (minimum days dead to be revival candidate)
+  MAX_DORMANCY_DAYS: parseInt(process.env.REVIVAL_MAX_DORMANCY_DAYS || '90'),
+  
+  // Revival signal threshold (0-100)
+  SIGNAL_THRESHOLD: parseInt(process.env.REVIVAL_SIGNAL_THRESHOLD || '75'),
+  
+  // Watchlist size
+  MAX_WATCHLIST_SIZE: parseInt(process.env.REVIVAL_MAX_WATCHLIST || '500'),
+  
+  // Scoring is handled by deterministic engines
+  // (No AI-based scoring, no custom thresholds here)
+  // All other scoring parameters in INTELLIGENCE section above
+};

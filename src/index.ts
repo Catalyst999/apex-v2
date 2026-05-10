@@ -8,6 +8,8 @@ import { supabase }    from "./db/supabase";
 import { startBot, sendAlert }    from "./services/telegram/bot";
 import { eventBus } from "./services/events/event-bus";
 import { scanOnChain } from "./services/scanner/onchain-scanner";
+// import "./core/signal-queue";
+import { startWebsocketMonitoring } from "./services/intelligence/websocket-monitor";
 import { TokenDetectedEvent } from "./services/events/signal-types";
 
 async function boot() {
@@ -40,17 +42,17 @@ Signal detected and logged for analysis.
     await sendAlert(message);
   });
 
-  // Start signal scanning loop
-  console.log("🔍 Starting signal scanning...");
-  setInterval(async () => {
-    try {
-      await scanOnChain();
-    } catch (error) {
-      console.error("❌ Signal scanning error:", error);
-    }
-  }, 30000); // Scan every 30 seconds
+  console.log("🔍 Initial on-chain scan...");
+  try {
+    await scanOnChain();
+  } catch (error) {
+    console.error('[Scanner] Initial scan error:', error);
+  }
 
-  console.log("✅ System fully operational - scanning for signals");
+  console.log("🔌 Starting Solana websocket monitor...");
+  await startWebsocketMonitoring();
+
+  console.log("✅ System fully operational - listening for on-chain events");
 }
 
 boot();

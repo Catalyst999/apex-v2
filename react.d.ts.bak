@@ -1,0 +1,3 @@
+declare namespace React {
+  export * from "react";
+}

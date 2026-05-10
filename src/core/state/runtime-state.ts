@@ -121,6 +121,21 @@ export interface SystemHealthMetrics {
   lastCheck: number;
 }
 
+export interface RevivalCandidate {
+  id: string;
+  token: string;
+  dormancyScore: number; // 0-100, how long dead
+  reactivationVelocity: number; // 0-100, how fast waking up
+  walletCoordinationScore: number; // 0-100, smart money clustering
+  liquidityTrustScore: number; // 0-100, liquidity reliability
+  attentionIgnitionScore: number; // 0-100, social acceleration
+  lifecycleState: 'DEAD' | 'DORMANT' | 'REACTIVATING' | 'IGNITING' | 'EXPLODING' | 'EXHAUSTION';
+  escalationLevel: number; // 0-100, readiness for execution
+  detectedAt: number;
+  lastUpdated: number;
+  expiresAt: number; // TTL for ephemeral storage
+}
+
 class RuntimeStateManager extends EventEmitter {
   // Core state containers
   private activeSignals: Map<string, ActiveSignal> = new Map();
@@ -134,6 +149,7 @@ class RuntimeStateManager extends EventEmitter {
   private executionQueue: Map<string, ExecutionQueueItem> = new Map();
   private skippedSignals: SkippedSignal[] = [];
   private systemHealth: SystemHealthMetrics | null = null;
+  private revivalCandidates: Map<string, RevivalCandidate> = new Map();
 
   constructor() {
     super();
@@ -428,6 +444,110 @@ class RuntimeStateManager extends EventEmitter {
     return this.systemHealth;
   }
 
+  // ─── REVIVAL CANDIDATE MANAGEMENT ───────────────────────────────────────
+
+  addRevivalCandidate(candidate: RevivalCandidate): void {
+    this.revivalCandidates.set(candidate.token, candidate);
+    this.emit('revival:candidate-added', candidate);
+    console.log(`[RuntimeState] Revival candidate added: ${candidate.token} (score: ${candidate.lifecycleState})`);
+  }
+
+  getRevivalCandidate(token: string): RevivalCandidate | undefined {
+    return this.revivalCandidates.get(token);
+  }
+
+  updateRevivalCandidate(token: string, updates: Partial<RevivalCandidate>): void {
+    const candidate = this.revivalCandidates.get(token);
+    if (candidate) {
+      Object.assign(candidate, updates);
+      candidate.lastUpdated = Date.now();
+      this.emit('revival:candidate-updated', candidate);
+    }
+  }
+
+  updateRevivalLifecycle(token: string, newState: RevivalCandidate['lifecycleState']): void {
+    const candidate = this.revivalCandidates.get(token);
+    if (candidate) {
+      const oldState = candidate.lifecycleState;
+      candidate.lifecycleState = newState;
+      candidate.lastUpdated = Date.now();
+      this.emit('revival:lifecycle-changed', { token, oldState, newState });
+    }
+  }
+
+  updateRevivalEscalation(token: string, escalationLevel: number): void {
+    const candidate = this.revivalCandidates.get(token);
+    if (candidate) {
+      candidate.escalationLevel = escalationLevel;
+      candidate.lastUpdated = Date.now();
+      this.emit('revival:escalation-updated', { token, escalationLevel });
+    }
+  }
+
+  getAllRevivalCandidates(): RevivalCandidate[] {
+    return Array.from(this.revivalCandidates.values());
+  }
+
+  getRevivalCandidatesByState(state: RevivalCandidate['lifecycleState']): RevivalCandidate[] {
+    return Array.from(this.revivalCandidates.values()).filter(c => c.lifecycleState === state);
+  }
+
+  getActiveRevivalCandidates(): RevivalCandidate[] {
+    return this.getAllRevivalCandidates().filter(c => c.expiresAt > Date.now());
+  }
+
+  removeRevivalCandidate(token: string): void {
+    this.revivalCandidates.delete(token);
+    this.emit('revival:candidate-removed', token);
+  }
+
+  // ─── REVIVAL CLEANUP (Ephemeral Memory Management) ──────────────────────
+
+  cleanupExpiredRevivalCandidates(): void {
+    const now = Date.now();
+    const expired: string[] = [];
+
+    for (const [token, candidate] of this.revivalCandidates.entries()) {
+      if (candidate.expiresAt < now) {
+        expired.push(token);
+      }
+    }
+
+    for (const token of expired) {
+      this.revivalCandidates.delete(token);
+    }
+
+    if (expired.length > 0) {
+      console.log(`[RuntimeState] Cleaned ${expired.length} expired revival candidates`);
+    }
+  }
+
+  getRevivalStats(): {
+    total: number;
+    byState: Record<string, number>;
+    active: number;
+  } {
+    const all = this.getAllRevivalCandidates();
+    const byState: Record<string, number> = {
+      DEAD: 0,
+      DORMANT: 0,
+      REACTIVATING: 0,
+      IGNITING: 0,
+      EXPLODING: 0,
+      EXHAUSTION: 0,
+    };
+
+    for (const candidate of all) {
+      byState[candidate.lifecycleState]++;
+    }
+
+    return {
+      total: all.length,
+      byState,
+      active: this.getActiveRevivalCandidates().length,
+    };
+  }
+
   // ─── GLOBAL STATE DUMP ──────────────────────────────────────────────
 
   getFullState() {
@@ -442,6 +562,10 @@ class RuntimeStateManager extends EventEmitter {
       sessionCount: Object.keys(this.telegramSessions).length,
       queuedExecutions: Array.from(this.executionQueue.values()),
       health: this.systemHealth,
+      revival: {
+        candidates: Array.from(this.revivalCandidates.values()),
+        stats: this.getRevivalStats(),
+      },
     };
   }
 }

@@ -1,5 +1,6 @@
 // src/services/scanner/helius-webhook.ts
 
+import { Request, Response } from 'express';
 import express, { Application } from "express";
 import axios                    from "axios";
 import { HELIUS, SERVER }       from "../../core/config";
@@ -28,11 +29,11 @@ export function createWebhookServer(
   const app = express();
   app.use(express.json({ limit: "10mb" }));
 
-  app.get("/health", (_req, res) => {
+  app.get("/health", (_req: Request, res: Response) => {
     res.json({ status: "ok", service: "catalyst-apex-trader", timestamp: new Date().toISOString() });
   });
 
-  app.post("/webhook", async (req, res) => {
+  app.post("/webhook", async (req: Request, res: Response) => {
     try {
       const secret = req.headers["authorization"] ?? req.query.secret;
       if (HELIUS.WEBHOOK_SECRET && secret !== HELIUS.WEBHOOK_SECRET) {

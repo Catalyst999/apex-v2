@@ -28,11 +28,6 @@ app.get("/health", (req: Request, res: Response) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// Mini app endpoint (placeholder)
-app.get("/mini-app", (req: Request, res: Response) => {
-  res.json({ message: "CATALYST APEX TRADER Mini App" });
-});
-
 export function startServer(): void {
   app.listen(SERVER.webhookPort, () => {
     console.log(`🌐 Webhook server listening on port ${SERVER.webhookPort}`);

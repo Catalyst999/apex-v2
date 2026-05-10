@@ -340,6 +340,28 @@ class EventOrchestrator extends EventEmitter {
     this.eventLog = [];
   }
 
+  /**
+   * EMIT REVIVAL EVENT
+   * Unified event model for all revival-related signals
+   */
+  async revivalEvent(
+    type: 'IGNITION' | 'COORDINATION' | 'ESCALATION' | 'LIFECYCLE_CHANGE' | 'WATCHLIST_UPDATE',
+    token: string,
+    payload: any
+  ): Promise<void> {
+    await this.dispatch(
+      'REVIVAL_EVENT',
+      {
+        type,
+        token,
+        timestamp: Date.now(),
+        ...payload, // Spread additional data
+      },
+      'revival-engine',
+      payload.priority || 'NORMAL'
+    );
+  }
+
   // Helper for legacy EventEmitter
   private eventEmitter(type: string, event: SystemEvent): void {
     this.emit(type, event);

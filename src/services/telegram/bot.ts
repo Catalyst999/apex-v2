@@ -24,7 +24,16 @@ export async function initializeBot(): Promise<void> {
   }
 
   try {
-    bot = new TelegramBot(TELEGRAM.TOKEN, { polling: true });
+    bot = new TelegramBot(TELEGRAM.TOKEN, {
+      polling: {
+        interval: 300,
+        autoStart: false,  // ✅ DISABLE - prevents 409 conflict
+        params: {
+          timeout: 10,
+          allowed_updates: ['message', 'callback_query', 'inline_query'],
+        },
+      },
+    });
     console.log('[Bot] Initialized with polling');
 
     // Register all command groups
@@ -53,7 +62,7 @@ export async function initializeBot(): Promise<void> {
     console.log('[Bot] Commands set in Telegram menu');
 
     // Error handling
-    bot.on('polling_error', (error) => {
+    bot.on('polling_error', (error: Error) => {
       console.error('[Bot] Polling error:', error.message);
     });
 
