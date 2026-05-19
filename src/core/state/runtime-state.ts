@@ -38,6 +38,12 @@ export interface WalletState {
   strategy: 'CONSERVATIVE' | 'AGGRESSIVE' | 'EXPERIMENTAL';
   status: 'ACTIVE' | 'PAUSED' | 'LEARNING';
   totalPnL: number;
+  balance?: number;
+  maxDrawdown?: number;
+  currentDrawdown?: number;
+  consecutiveLosses?: number;
+  consecutiveWins?: number;
+  capitalState?: 'MICRO' | 'SMALL' | 'MEDIUM' | 'AGGRESSIVE' | 'DEFENSIVE' | 'DRAWDOWN' | 'RECOVERY';
   openPositions: number;
   winRate: number;
   convictionMultiplier: number;
@@ -121,6 +127,37 @@ export interface SystemHealthMetrics {
   lastCheck: number;
 }
 
+export interface Execution {
+  id: string;
+  tokenAddress: string;
+  tokenName: string;
+  walletAddress: string;
+  
+  // Signal that triggered this
+  tradeSignalId: string;
+  conviction: number;
+  convictionMode: 'AGGRESSIVE' | 'CAUTIOUS' | 'DEFENSIVE' | 'OBSERVATION' | 'INACTIVE';
+  
+  // Position parameters
+  positionSize: number; // % of wallet
+  leverage: number; // 1-3x
+  stopLoss: number; // %
+  takeProfit: number; // %
+  
+  // Status
+  status: 'PENDING' | 'EXECUTING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  mode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO';
+  
+  // Timestamps
+  createdAt: number;
+  executedAt?: number;
+  completedAt?: number;
+  
+  // Metadata
+  narrativeCategory: string;
+  patternShape: string;
+}
+
 export interface RevivalCandidate {
   id: string;
   token: string;
@@ -150,11 +187,25 @@ class RuntimeStateManager extends EventEmitter {
   private skippedSignals: SkippedSignal[] = [];
   private systemHealth: SystemHealthMetrics | null = null;
   private revivalCandidates: Map<string, RevivalCandidate> = new Map();
+  
+  // Phase 2 execution management
+  private executions: Map<string, Execution> = new Map();
+  private executionList: Execution[] = [];
+
+  // Execution mode and mode history
+  private executionMode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO' = 'SHADOW';
+  private executionModeHistory: Array<{
+    oldMode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO';
+    newMode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO';
+    changedAt: number;
+    changedBy?: string; // 'telegram', 'dashboard', 'startup'
+  }> = [];
 
   constructor() {
     super();
     this.setMaxListeners(100); // many modules will listen
     this.initializeHealth();
+    this.initializeExecutionMode();
   }
 
   // ─── SIGNAL MANAGEMENT ──────────────────────────────────────────────
@@ -374,28 +425,6 @@ class RuntimeStateManager extends EventEmitter {
     return Array.from(this.dashboardConnections.values());
   }
 
-  // ─── EXECUTION QUEUE MANAGEMENT ─────────────────────────────────────
-
-  enqueueExecution(item: ExecutionQueueItem): void {
-    this.executionQueue.set(item.id, item);
-    this.emit('execution:enqueued', item);
-  }
-
-  getNextExecution(): ExecutionQueueItem | undefined {
-    const pending = Array.from(this.executionQueue.values())
-      .filter((e) => e.status === 'PENDING')
-      .sort((a, b) => b.priority - a.priority);
-    return pending[0];
-  }
-
-  updateExecutionStatus(id: string, status: ExecutionQueueItem['status']): void {
-    const item = this.executionQueue.get(id);
-    if (item) {
-      item.status = status;
-      this.emit('execution:status-updated', { id, status });
-    }
-  }
-
   // ─── SKIPPED SIGNAL TRACKING ────────────────────────────────────────
 
   recordSkippedSignal(signal: SkippedSignal): void {
@@ -548,6 +577,273 @@ class RuntimeStateManager extends EventEmitter {
     };
   }
 
+  // ─── EXECUTION MANAGEMENT (Phase 2) ──────────────────────────────────────
+
+  addExecution(execution: Execution): void {
+    this.executions.set(execution.id, execution);
+    this.executionList.push(execution);
+    this.emit('execution:added', execution);
+  }
+
+  getExecution(executionId: string): Execution | undefined {
+    return this.executions.get(executionId);
+  }
+
+  getExecutions(status?: string): Execution[] {
+    if (!status) {
+      return Array.from(this.executions.values());
+    }
+    return Array.from(this.executions.values()).filter(e => e.status === status);
+  }
+
+  updateExecutionStatus(executionId: string, newStatus: string): void {
+    const execution = this.executions.get(executionId);
+    if (execution) {
+      (execution as any).status = newStatus;
+      if (newStatus === 'EXECUTING' && !execution.executedAt) {
+        execution.executedAt = Date.now();
+      }
+      if (newStatus === 'COMPLETED' && !execution.completedAt) {
+        execution.completedAt = Date.now();
+      }
+      this.emit('execution:status-updated', { executionId, newStatus });
+    }
+  }
+
+  removeExecution(executionId: string): void {
+    this.executions.delete(executionId);
+    this.executionList = this.executionList.filter(e => e.id !== executionId);
+    this.emit('execution:removed', executionId);
+  }
+
+  getNextExecution(): Execution | undefined {
+    return this.executionList.length > 0 ? this.executionList[0] : undefined;
+  }
+
+  dequeueExecution(): Execution | undefined {
+    if (this.executionList.length === 0) return undefined;
+    const execution = this.executionList.shift();
+    if (execution) {
+      this.executions.delete(execution.id);
+    }
+    return execution;
+  }
+
+  private resolveExecutionMode(mode?: string): Execution['mode'] {
+    if (process.env.EXECUTION_MODE) {
+      console.warn('[RuntimeState] EXECUTION_MODE is deprecated. Falling back to SYSTEM_MODE as the single source of truth.');
+    }
+    const normalized = String(mode || process.env.SYSTEM_MODE || 'SHADOW').trim().toUpperCase();
+    if (normalized === 'FULL_AUTO' || normalized === 'FULL-AUTO' || normalized === 'FULLAUTO' || normalized === 'FULL') {
+      return 'FULL_AUTO';
+    }
+    if (normalized === 'SEMI_AUTO' || normalized === 'SEMI-AUTO' || normalized === 'SEMIAUTO' || normalized === 'SEMI') {
+      return 'SEMI_AUTO';
+    }
+    return 'SHADOW';
+  }
+
+  private initializeExecutionMode(): void {
+    const initialMode = this.resolveExecutionMode();
+    this.setExecutionMode(initialMode, 'startup');
+  }
+
+  getExecutionMode(): 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO' {
+    return this.executionMode;
+  }
+
+  setExecutionMode(
+    newMode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO',
+    changedBy?: string
+  ): boolean {
+    // Validate mode
+    if (!['SHADOW', 'SEMI_AUTO', 'FULL_AUTO'].includes(newMode)) {
+      console.warn(`[RuntimeState] Invalid execution mode: ${newMode}`);
+      return false;
+    }
+    
+    const oldMode = this.executionMode;
+    
+    // Prevent SHADOW → FULL_AUTO (require SEMI_AUTO in between)
+    if (oldMode === 'SHADOW' && newMode === 'FULL_AUTO') {
+      console.warn('[RuntimeState] Cannot jump from SHADOW to FULL_AUTO. Use SEMI_AUTO first.');
+      return false;
+    }
+    
+    // Update mode
+    this.executionMode = newMode;
+    
+    // Log to history
+    this.executionModeHistory.push({
+      oldMode,
+      newMode,
+      changedAt: Date.now(),
+      changedBy: changedBy || 'unknown',
+    });
+    
+    // Emit event
+    this.emit('execution-mode-changed', {
+      oldMode,
+      newMode,
+      changedAt: Date.now(),
+      changedBy,
+    });
+    
+    console.log(
+      `[RuntimeState] ✅ Execution mode: ${oldMode} → ${newMode.toUpperCase()}${changedBy ? ` (${changedBy})` : ''}`
+    );
+    
+    return true;
+  }
+
+  getExecutionModeHistory(): Array<{
+    oldMode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO';
+    newMode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO';
+    changedAt: number;
+    changedBy?: string;
+  }> {
+    return [...this.executionModeHistory];
+  }
+
+  /**
+   * GET EXECUTION MODE DESCRIPTION
+   * Human-readable description of current mode
+   */
+  getExecutionModeDescription(): string {
+    switch (this.executionMode) {
+      case 'SHADOW':
+        return 'Simulating trades (not executing on blockchain)';
+      case 'SEMI_AUTO':
+        return 'Alert + manual approval (via Telegram/Dashboard)';
+      case 'FULL_AUTO':
+        return 'Autonomous execution (no approval needed)';
+      default:
+        return 'Unknown mode';
+    }
+  }
+
+  /**
+   * GET EXECUTION MODE INFO
+   * Complete info about current mode
+   */
+  getExecutionModeInfo(): {
+    mode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO';
+    description: string;
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    requiresApproval: boolean;
+    broadcastsToBlockchain: boolean;
+    canSwitchTo: ('SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO')[];
+  } {
+    const currentMode = this.executionMode;
+    
+    let description = '';
+    let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
+    let requiresApproval = false;
+    let broadcastsToBlockchain = false;
+    let canSwitchTo: ('SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO')[] = [];
+    
+    switch (currentMode) {
+      case 'SHADOW':
+        description = 'Simulating trades without blockchain execution';
+        riskLevel = 'LOW';
+        requiresApproval = false;
+        broadcastsToBlockchain = false;
+        canSwitchTo = ['SEMI_AUTO']; // Can go to SEMI_AUTO
+        break;
+        
+      case 'SEMI_AUTO':
+        description = 'Each trade requires manual approval (via Telegram/Dashboard)';
+        riskLevel = 'MEDIUM';
+        requiresApproval = true;
+        broadcastsToBlockchain = true;
+        canSwitchTo = ['SHADOW', 'FULL_AUTO']; // Can go either direction
+        break;
+        
+      case 'FULL_AUTO':
+        description = 'Autonomous execution without approval (DANGEROUS)';
+        riskLevel = 'HIGH';
+        requiresApproval = false;
+        broadcastsToBlockchain = true;
+        canSwitchTo = ['SEMI_AUTO']; // Can go to SEMI_AUTO only
+        break;
+    }
+    
+    return {
+      mode: currentMode,
+      description,
+      riskLevel,
+      requiresApproval,
+      broadcastsToBlockchain,
+      canSwitchTo,
+    };
+  }
+
+  /**
+   * VALIDATE MODE SWITCH
+   * Check if mode switch is allowed
+   */
+  validateModeSwitch(
+    newMode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO'
+  ): { allowed: boolean; reason: string } {
+    const current = this.executionMode;
+    
+    // Can't switch to same mode
+    if (current === newMode) {
+      return { allowed: false, reason: `Already in ${newMode} mode` };
+    }
+    
+    // Prevent SHADOW → FULL_AUTO jump
+    if (current === 'SHADOW' && newMode === 'FULL_AUTO') {
+      return {
+        allowed: false,
+        reason: 'Cannot jump from SHADOW to FULL_AUTO. Switch to SEMI_AUTO first.',
+      };
+    }
+    
+    // All other transitions allowed
+    return { allowed: true, reason: 'Switch allowed' };
+  }
+
+  /**
+   * SAFE MODE
+   * Emergency switch to SHADOW mode
+   */
+  emergencyShutdown(): void {
+    console.warn('[RuntimeState] 🛑 EMERGENCY SHUTDOWN - Switching to SHADOW mode');
+    this.executionMode = 'SHADOW';
+    
+    // Disable all wallets
+    for (const wallet of this.getAllWallets()) {
+      wallet.shouldTrade = false;
+      wallet.status = 'PAUSED';
+    }
+    
+    this.emit('emergency-shutdown');
+  }
+
+  setWalletTradingState(walletId: string, shouldTrade: boolean, reason?: string): void {
+    const wallet = this.walletStates.get(walletId);
+    if (!wallet) return;
+    wallet.shouldTrade = shouldTrade;
+    wallet.lastUpdate = Date.now();
+    this.emit('wallet:trading-state-updated', { walletId, shouldTrade, reason });
+  }
+
+  getWalletTradingState(walletId: string): boolean | undefined {
+    return this.walletStates.get(walletId)?.shouldTrade;
+  }
+
+  getExecutionStats() {
+    return {
+      totalExecutions: this.executions.size,
+      pending: this.getExecutions('PENDING').length,
+      executing: this.getExecutions('EXECUTING').length,
+      completed: this.getExecutions('COMPLETED').length,
+      failed: this.getExecutions('FAILED').length,
+      queueLength: this.executionList.length,
+    };
+  }
+
   // ─── GLOBAL STATE DUMP ──────────────────────────────────────────────
 
   getFullState() {
@@ -566,9 +862,16 @@ class RuntimeStateManager extends EventEmitter {
         candidates: Array.from(this.revivalCandidates.values()),
         stats: this.getRevivalStats(),
       },
+      executionMode: this.executionMode,
+      executionModeHistory: this.getExecutionModeHistory(),
+      executions: {
+        list: Array.from(this.executions.values()),
+        stats: this.getExecutionStats(),
+      },
     };
   }
 }
 
-// Export singleton
+// Export class and singleton
+export { RuntimeStateManager as RuntimeState };
 export const runtimeState = new RuntimeStateManager();

@@ -119,6 +119,230 @@ export interface NarrativeSaturationEvent {
   timestamp: number;
 }
 
+// ============================================
+// PHASE 2: INTELLIGENCE PIPELINE EVENTS
+// ============================================
+
+// ─── Ingestion ──────────────────────────────────────────────────────
+
+export interface SignalIngestedEvent {
+  type: 'SIGNAL_INGESTED';
+  tokenAddress: string;
+  tokenName: string;
+  description: string;
+  marketData: Record<string, any>;
+  onChainData: Record<string, any>;
+  walletAddress?: string;
+  scanner?: string;
+  gatewayPassed: boolean;
+  ingestionTime: number;
+  timestamp: number;
+}
+
+export interface SignalDeduplicatedEvent {
+  type: 'SIGNAL_DEDUPLICATED';
+  token: string;
+  mint: string;
+  name: string;
+  symbol: string;
+  timestamp: number;
+  source: string;
+  reason: string;
+}
+
+// ─── Enrichment ──────────────────────────────────────────────────────
+
+export interface SignalEnrichedEvent {
+  type: 'SIGNAL_ENRICHED';
+  tokenAddress: string;
+  tokenName: string;
+  abnormalityScore: number;
+  abnormalitySeverity: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  abnormalityType: string;
+  emotionPhase: string;
+  emotionIntensity: number;
+  predictedNextPhase: string;
+  hasPvPRisk: boolean;
+  pvPPatterns: string[];
+  pvPSeverity: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH';
+  enrichedAt: number;
+  timestamp: number;
+}
+
+export interface NarrativeScoredEvent {
+  type: 'NARRATIVE_SCORED';
+  tokenAddress: string;
+  tokenName: string;
+  narrativeMatched: boolean;
+  narrativeCategory: string;
+  narrativeTier: 1 | 2 | 3;
+  narrativeFreshness: number;
+  narrativeSaturation: number;
+  capitalRotationStrength: number;
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  narrativeStage: 'EMERGING' | 'GROWING' | 'PEAK' | 'DECLINING' | 'DEAD';
+  convictionBoost: number;
+  narrativeConfidence: number;
+  scoredAt: number;
+  timestamp: number;
+}
+
+export interface MarketMemoryScoredEvent {
+  type: 'MARKET_MEMORY_SCORED';
+  tokenAddress: string;
+  tokenName: string;
+  patternFound: boolean;
+  matchedPatternId: string;
+  patternName: string;
+  matchConfidence: number;
+  historicalWinRate: number;
+  historicalAvgHoldTime: number;
+  historicalAvgROI: number;
+  estimatedProbabilitySuccess: number;
+  estimatedProbabilityRug: number;
+  estimatedProbabilityDump: number;
+  predictedPeakTime: number;
+  recommendedHoldTime: number;
+  scoredAt: number;
+  timestamp: number;
+}
+
+export interface PatternAnalyzedEvent {
+  type: 'PATTERN_ANALYZED';
+  tokenAddress: string;
+  tokenName: string;
+  currentShape: string;
+  shapeConfidence: number;
+  volumeSignature: string;
+  nextMilestone: string;
+  historicalMatchFound: boolean;
+  matchedHistoricalPattern: string;
+  matchConfidence: number;
+  historicalROI: number;
+  historicalDuration: number;
+  predictedFailureTime: number;
+  failureProbability: number;
+  failureMode: 'RUG' | 'DUMP' | 'STALL' | 'RECOVERY' | 'UNKNOWN';
+  recommendedStopLoss: number;
+  recommendedTakeProfit: number;
+  patternQuality: 'POOR' | 'FAIR' | 'GOOD' | 'EXCELLENT';
+  patternConfidence: number;
+  analyzedAt: number;
+  timestamp: number;
+}
+
+// ─── Conviction ──────────────────────────────────────────────────────
+
+export interface ConvictionCalculatedEvent {
+  type: 'CONVICTION_CALCULATED';
+  tokenAddress: string;
+  tokenName: string;
+  signals: Record<string, number>;
+  conviction: number;
+  convictionMode: 'AGGRESSIVE' | 'CAUTIOUS' | 'DEFENSIVE' | 'OBSERVATION' | 'INACTIVE';
+  recommendedPositionSize: number;
+  recommendedLeverage: number;
+  adjustedConviction: number;
+  confidenceMultiplier: number;
+  estimatedStopLoss: number;
+  estimatedTakeProfit: number;
+  timeToFailure: number;
+  aggregatedAt: number;
+  timestamp: number;
+}
+
+// ─── Routing ──────────────────────────────────────────────────────
+
+export interface TradeSignalEvent {
+  type: 'TRADE_SIGNAL';
+  tokenAddress: string;
+  tokenName: string;
+  decision: 'TRADE' | 'WAIT' | 'AVOID';
+  severity: 'BUY' | 'SCALP' | 'MICRO' | 'AVOID' | 'SCAM_RISK';
+  confidence: number;
+  reasons: string[];
+  positionSize: number;
+  leverage: number;
+  stopLoss: number;
+  takeProfit: number;
+  riskScore: number;
+  rugPullProbability: number;
+  dumpProbability: number;
+  marketRegime: string;
+  volatilityLevel: number;
+  decidedAt: number;
+  timestamp: number;
+}
+
+// ─── Execution ──────────────────────────────────────────────────────
+
+export interface TradeExecutedEvent {
+  type: 'TRADE_EXECUTED';
+  tokenAddress: string;
+  tokenName: string;
+  tradeId: string;
+  entryPrice: number;
+  positionSize: number;
+  leverage: number;
+  stopLoss: number;
+  takeProfit: number;
+  mode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO';
+  executedAt: number;
+  timestamp: number;
+}
+
+export interface TradeClosedEvent {
+  type: 'TRADE_CLOSED';
+  tokenAddress: string;
+  tokenName: string;
+  tradeId: string;
+  entryPrice: number;
+  exitPrice: number;
+  positionSize: number;
+  leverage: number;
+  exitReason: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TIMEOUT' | 'MANUAL' | 'ERROR';
+  pnl: number;
+  roi: number;
+  executedAt: number;
+  closedAt: number;
+  timestamp: number;
+}
+
+// ─── Learning ──────────────────────────────────────────────────────
+
+export interface OutcomeRecordedEvent {
+  type: 'OUTCOME_RECORDED';
+  tokenAddress: string;
+  tokenName: string;
+  tradeId: string;
+  entryPrice: number;
+  exitPrice: number;
+  pnl: number;
+  roi: number;
+  holdTime: number;
+  won: boolean;
+  narrativeCategory: string;
+  patternShape: string;
+  convictionAtEntry: number;
+  antiPatterns: string[];
+  journalEntry: string;
+  lessonLearned: string;
+  recordedAt: number;
+  timestamp: number;
+  token?: string;
+}
+
+// ─── Failure Events ──────────────────────────────────────────────────
+
+export interface ProcessingFailedEvent {
+  type: 'SIGNAL_ENRICHMENT_FAILED' | 'NARRATIVE_SCORING_FAILED' | 'MARKET_MEMORY_SCORING_FAILED' | 
+        'PATTERN_ANALYSIS_FAILED' | 'CONVICTION_CALCULATION_FAILED' | 'ROUTING_DECISION_FAILED' | 
+        'OUTCOME_PROCESSING_FAILED';
+  tokenAddress?: string;
+  error: any;
+  timestamp: number;
+}
+
 // ─── Risk/Invalidation Events ────────────────────────────────────────
 
 export interface InvalidationSignalEvent {
@@ -159,76 +383,135 @@ export interface LiquidityCollapseEvent {
 
 export interface ConvictionCalculatedEvent {
   type: 'CONVICTION_CALCULATED';
-  token: string;
-  walletId: string;
-  conviction: number; // 0-100
-  mode: 'AGGRESSIVE' | 'CAUTIOUS' | 'DEFENSIVE' | 'OBSERVATION' | 'INACTIVE';
+  tokenAddress: string;
+  tokenName: string;
+  signals: Record<string, number>;
+  conviction: number;
+  convictionMode: 'AGGRESSIVE' | 'CAUTIOUS' | 'DEFENSIVE' | 'OBSERVATION' | 'INACTIVE';
+  recommendedPositionSize: number;
+  recommendedLeverage: number;
+  adjustedConviction: number;
+  confidenceMultiplier: number;
+  estimatedStopLoss: number;
+  estimatedTakeProfit: number;
+  timeToFailure: number;
+  aggregatedAt: number;
   timestamp: number;
+  walletId?: string;
+  token?: string;
 }
 
 export interface TradeSignalEvent {
   type: 'TRADE_SIGNAL';
-  token: string;
-  walletId: string;
-  signal: 'BUY' | 'SELL' | 'HOLD';
-  entryPrice: number;
-  conviction: number;
+  tokenAddress: string;
+  tokenName: string;
+  decision: 'TRADE' | 'WAIT' | 'AVOID';
+  severity: 'BUY' | 'SCALP' | 'MICRO' | 'AVOID' | 'SCAM_RISK';
+  confidence: number;
+  reasons: string[];
   positionSize: number;
+  leverage: number;
+  stopLoss: number;
+  takeProfit: number;
+  riskScore: number;
+  rugPullProbability: number;
+  dumpProbability: number;
+  marketRegime: string;
+  volatilityLevel: number;
+  decidedAt: number;
+  conviction?: any;
+  token?: string;
   timestamp: number;
 }
 
 export interface SignalFilteredEvent {
   type: 'SIGNAL_FILTERED';
-  token: string;
+  tokenAddress: string;
   conviction: number;
   timestamp: number;
   reason?: string;
+  token?: string;
 }
 
 export interface SignalWatchedEvent {
   type: 'SIGNAL_WATCHED';
-  token: string;
+  tokenAddress: string;
   conviction: number;
   timestamp: number;
   reason?: string;
+  token?: string;
 }
 
 // ─── Outcome Events ─────────────────────────────────────────────────────
 
 export interface TradeExecutedEvent {
   type: 'TRADE_EXECUTED';
-  token: string;
-  walletId: string;
+  tokenAddress: string;
+  tokenName: string;
+  tradeId: string;
   entryPrice: number;
   positionSize: number;
   leverage: number;
+  stopLoss: number;
+  takeProfit: number;
+  mode: 'SHADOW' | 'SEMI_AUTO' | 'FULL_AUTO';
+  executedAt: number;
   timestamp: number;
+  walletId?: string;
+  token?: string;
 }
 
 export interface TradeClosedEvent {
   type: 'TRADE_CLOSED';
+  tokenAddress: string;
+  tokenName: string;
   tradeId: string;
-  token: string;
-  walletId: string;
   entryPrice: number;
   exitPrice: number;
+  positionSize: number;
+  leverage: number;
+  exitReason: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TIMEOUT' | 'MANUAL' | 'ERROR';
   pnl: number;
-  pnlPercent: number;
-  reason: string;
+  roi: number;
+  executedAt: number;
+  closedAt: number;
   timestamp: number;
+  walletId?: string;
+  token?: string;
+  pnlPercent?: number;
 }
 
 export interface OutcomeLoggedEvent {
   type: 'OUTCOME_LOGGED';
   tradeId: string;
-  token: string;
+  tokenAddress: string;
+  tokenName: string;
   walletId: string;
   outcome: 'WIN' | 'LOSS' | 'BREAK_EVEN';
   pnl: number;
   learnings: string[];
   timestamp: number;
+  token?: string;
 }
-
+export interface SignalWeightsUpdatedEvent {
+  type: 'SIGNAL_WEIGHTS_UPDATED';
+  walletId: string;
+  walletState: {
+    capitalState: string;
+    balance?: number;
+    currentDrawdown?: number;
+    consecutiveLosses?: number;
+  };
+  baseConviction: number;
+  adjustment: {
+    convictionMultiplier: number;
+    confidenceThreshold: number;
+    positionSizeMultiplier: number;
+    reason: string;
+  };
+  outcome: 'WIN' | 'LOSS' | 'BREAK_EVEN' | 'UNKNOWN';
+  timestamp: number;
+}
 // ─── Memory Update Events ────────────────────────────────────────────────
 
 export interface PatternRecordedEvent {
@@ -262,6 +545,12 @@ export type SignalEvent =
   | SocialVelocitySpikeEvent
   | RegimeChangeEvent
   | NarrativeSaturationEvent
+  | SignalIngestedEvent
+  | SignalDeduplicatedEvent
+  | SignalEnrichedEvent
+  | NarrativeScoredEvent
+  | MarketMemoryScoredEvent
+  | PatternAnalyzedEvent
   | InvalidationSignalEvent
   | RugRiskDetectedEvent
   | WhaleExitEvent
@@ -272,7 +561,10 @@ export type SignalEvent =
   | SignalWatchedEvent
   | TradeExecutedEvent
   | TradeClosedEvent
+  | OutcomeRecordedEvent
+  | ProcessingFailedEvent
   | OutcomeLoggedEvent
+  | SignalWeightsUpdatedEvent
   | PatternRecordedEvent
   | MemoryUpdatedEvent;
 

@@ -5,3 +5,5 @@ dist/
 .vercel
 .env*.local
 .next/
+tsconfig.backend.tsbuildinfo
+tsconfig.tsbuildinfo

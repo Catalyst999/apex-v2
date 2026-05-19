@@ -14,6 +14,8 @@ export interface Wallet {
   strategy: WalletStrategyType;
   tag: WalletTag;
   is_active: boolean;
+  encrypted_keypair?: string;
+  key_type?: string;
   metadata?: any;
   created_at: string;
   updated_at: string;

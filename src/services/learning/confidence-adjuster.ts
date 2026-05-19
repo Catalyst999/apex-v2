@@ -6,6 +6,9 @@
  */
 
 import { supabase } from '../../db/supabase';
+import { eventBus } from '../events/event-bus';
+import { capitalStateEngine } from '../../core/capital-state-engine';
+import { runtimeState } from '../../core/state/runtime-state';
 import { TradeOutcome } from './outcome-logger';
 
 export interface ConfidenceAdjustment {
@@ -19,8 +22,16 @@ class ConfidenceAdjuster {
   /**
    * Adjust conviction based on recent performance
    */
-  async adjustConviction(walletId: string, baseConviction: number): Promise<ConfidenceAdjustment> {
+  async adjustConviction(
+    walletId: string,
+    baseConviction: number,
+    outcome?: TradeOutcome,
+  ): Promise<ConfidenceAdjustment> {
     try {
+      const wallet = runtimeState.getWallet(walletId);
+      const capitalState = wallet ? capitalStateEngine.determineState(wallet) : 'MEDIUM';
+      const sizingRules = capitalStateEngine.getSizingRules(capitalState);
+
       // Get wallet stats
       const { data: analytics } = await supabase
         .from('wallet_analytics')
@@ -29,20 +40,37 @@ class ConfidenceAdjuster {
         .single();
 
       if (!analytics || analytics.total_trades < 5) {
-        // Not enough data, use defaults
-        return {
-          convictionMultiplier: 1.0,
-          confidenceThreshold: 50,
+        // Not enough data, use capital state defaults
+        const defaultAdjustment: ConfidenceAdjustment = {
+          convictionMultiplier: Math.max(0.3, Math.min(2.0, sizingRules.aggressionMultiplier)),
+          confidenceThreshold: Math.max(50, sizingRules.convictionThreshold),
           positionSizeMultiplier: 1.0,
-          reason: 'Insufficient trade history (< 5 trades)',
+          reason: 'Insufficient trade history (< 5 trades) - using capital state defaults',
         };
+
+        await eventBus.emit({
+          type: 'SIGNAL_WEIGHTS_UPDATED',
+          walletId,
+          walletState: {
+            capitalState,
+            balance: wallet?.balance,
+            currentDrawdown: wallet?.currentDrawdown,
+            consecutiveLosses: wallet?.consecutiveLosses,
+          },
+          baseConviction,
+          adjustment: defaultAdjustment,
+          outcome: outcome?.outcome ?? 'UNKNOWN',
+          timestamp: Date.now(),
+        });
+
+        return defaultAdjustment;
       }
 
       const winRate = analytics.win_rate || 0;
       const profitFactor = analytics.profit_factor || 0;
 
-      let convictionMultiplier = 1.0;
-      let confidenceThreshold = 50;
+      let convictionMultiplier = sizingRules.aggressionMultiplier;
+      let confidenceThreshold = sizingRules.convictionThreshold;
       let positionSizeMultiplier = 1.0;
       let reason = '';
 
@@ -92,12 +120,58 @@ class ConfidenceAdjuster {
         reason += ` | High profit factor (${profitFactor.toFixed(2)}) - increasing size`;
       }
 
-      return {
+      if (capitalState === 'DEFENSIVE' || capitalState === 'DRAWDOWN') {
+        convictionMultiplier = Math.min(convictionMultiplier, sizingRules.aggressionMultiplier * 1.1);
+        confidenceThreshold = Math.max(confidenceThreshold, sizingRules.convictionThreshold);
+        positionSizeMultiplier = Math.min(positionSizeMultiplier, sizingRules.maxPositionSize / 10);
+        reason += ` | ${capitalState} capital state active`;
+      } else if (capitalState === 'RECOVERY') {
+        convictionMultiplier *= 0.85;
+        confidenceThreshold = Math.max(confidenceThreshold, 75);
+        positionSizeMultiplier *= 0.8;
+        reason += ' | Recovery mode - modest scaling';
+      }
+
+      if (outcome) {
+        if (outcome.outcome === 'LOSS') {
+          convictionMultiplier *= 0.7;
+          confidenceThreshold = Math.max(confidenceThreshold, 80);
+          positionSizeMultiplier *= 0.7;
+          reason += ' | Loss outcome - applying defensive correction';
+        } else if (outcome.outcome === 'WIN') {
+          convictionMultiplier *= 1.05;
+          confidenceThreshold = Math.max(30, confidenceThreshold - 10);
+          positionSizeMultiplier *= 1.05;
+          reason += ' | Win outcome - slight confidence increase';
+        } else {
+          convictionMultiplier *= 0.95;
+          reason += ' | Break-even trade - neutral adjustment';
+        }
+      }
+
+      const adjustment: ConfidenceAdjustment = {
         convictionMultiplier: Math.max(0.3, Math.min(2.0, convictionMultiplier)),
         confidenceThreshold: Math.max(20, Math.min(95, confidenceThreshold)),
         positionSizeMultiplier: Math.max(0.25, Math.min(2.0, positionSizeMultiplier)),
-        reason,
+        reason: reason || 'Market performance indicates normal conviction',
       };
+
+      await eventBus.emit({
+        type: 'SIGNAL_WEIGHTS_UPDATED',
+        walletId,
+        walletState: {
+          capitalState,
+          balance: wallet?.balance,
+          currentDrawdown: wallet?.currentDrawdown,
+          consecutiveLosses: wallet?.consecutiveLosses,
+        },
+        baseConviction,
+        adjustment,
+        outcome: outcome?.outcome ?? 'UNKNOWN',
+        timestamp: Date.now(),
+      });
+
+      return adjustment;
     } catch (error) {
       console.error('[ConfidenceAdjuster] Failed to adjust conviction:', error);
       return {

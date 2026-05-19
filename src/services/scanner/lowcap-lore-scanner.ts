@@ -22,6 +22,7 @@
 import { RawPair } from "./dexscreener";
 import { matchNarrative } from "../scoring/narrative-engine";
 import { detectFakeVolume } from "./fake-volume-detector";
+import { heliusRpcEnrichment } from "../rpc/helius-rpc-enrichment";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -271,4 +272,153 @@ export function shouldJeetExit(
 ): boolean {
   const multiplier = currentPrice / entryPrice;
   return multiplier >= 2.0;
+}
+
+// File: src/services/scanner/lowcap-lore-scanner.ts
+
+export interface LowcapLoreSignal {
+  token: string;
+  narrativeStrength: number;    // 0-100
+  narrativeType: string;        // "meme" | "utility" | "gaming" | "defi" | etc
+  communitySize: number;        // Twitter followers, Discord members
+  communityGrowth: number;      // % growth (7-day)
+  sentimentScore: number;       // -100 to +100
+  narrativeLifecycle: string;   // "emerging" | "growth" | "peak" | "decline"
+  confidence: number;           // 0-100
+}
+
+export class LowcapLoreScanner {
+  async analyzeToken(token: string): Promise<LowcapLoreSignal | null> {
+    // Get token metadata
+    const metadata = await heliusRpcEnrichment.getTokenMetadata(token);
+    if (!metadata) return null;
+
+    // Analyze Twitter/X presence
+    const twitterMetrics = await this.analyzeTwitter(metadata.website || '');
+
+    // Analyze Discord/community
+    const communityMetrics = await this.analyzeCommunity(metadata.discordUrl || '');
+
+    // Analyze sentiment
+    const sentiment = await this.analyzeSentiment(token);
+    
+    // Determine narrative type
+    const narrativeType = this.detectNarrativeType({
+      name: metadata.name,
+      description: metadata.description,
+      twitterBio: twitterMetrics.bio
+    });
+    
+    // Calculate narrative strength
+    const narrativeStrength = this.calculateNarrativeStrength({
+      communitySize: twitterMetrics.followers,
+      communityGrowth: communityMetrics.growth,
+      sentimentScore: sentiment.score,
+      websitePresence: !!metadata.website,
+      docsPresence: !!metadata.docs
+    });
+    
+    // Determine lifecycle phase
+    const lifecycle = this.detectLifecyclePhase({
+      age: metadata.createdAt,
+      growthRate: communityMetrics.growth,
+      sentimentTrend: sentiment.trend,
+      activityLevel: communityMetrics.posts7d
+    });
+    
+    if (narrativeStrength > 50) {
+      return {
+        token,
+        narrativeStrength,
+        narrativeType,
+        communitySize: twitterMetrics.followers,
+        communityGrowth: communityMetrics.growth,
+        sentimentScore: sentiment.score,
+        narrativeLifecycle: lifecycle,
+        confidence: 80
+      };
+    }
+    
+    return null;
+  }
+  
+  private async analyzeTwitter(twitterUrl: string) {
+    // Parse Twitter handle from URL
+    const handle = twitterUrl?.match(/@(\w+)/)?.[1];
+    if (!handle) return { followers: 0, bio: '', engagement: 0, postFrequency: 0 };
+
+    // Get Twitter metrics (would use Twitter API)
+    return {
+      followers: 10000,
+      bio: '',
+      engagement: 85,
+      postFrequency: 5,
+    };
+  }
+
+  private async analyzeCommunity(discordUrl: string) {
+    if (!discordUrl) {
+      return { growth: 0, posts7d: 0, members: 0 };
+    }
+
+    // Placeholder Discord/community metrics
+    return {
+      growth: 12,
+      posts7d: 15,
+      members: 4200,
+    };
+  }
+
+  private async analyzeSentiment(token: string) {
+    // Placeholder sentiment analysis
+    return {
+      score: 25,
+      trend: 'stable',
+    };
+  }
+
+  private detectNarrativeType(params: any): string {
+    const { name, description } = params;
+    const lower = `${name} ${description}`.toLowerCase();
+    
+    if (lower.includes('gaming') || lower.includes('game')) return 'gaming';
+    if (lower.includes('defi') || lower.includes('yield')) return 'defi';
+    if (lower.includes('ai') || lower.includes('agent')) return 'ai';
+    if (lower.includes('meme') || lower.includes('dog')) return 'meme';
+    if (lower.includes('layer') || lower.includes('chain')) return 'infrastructure';
+    
+    return 'utility';
+  }
+  
+  private calculateNarrativeStrength(params: any): number {
+    let score = 0;
+    
+    // Community size (0-30 points)
+    const followers = Math.min(params.communitySize / 1000, 30);
+    
+    // Community growth (0-30 points)
+    const growth = Math.min(params.communityGrowth / 5, 30);
+    
+    // Sentiment (0-20 points)
+    const sentiment = (params.sentimentScore + 100) / 10;
+    
+    // Web presence (0-20 points)
+    let presence = 0;
+    if (params.websitePresence) presence += 10;
+    if (params.docsPresence) presence += 10;
+    
+    return followers + growth + sentiment + presence;
+  }
+  
+  private detectLifecyclePhase(params: any): string {
+    const { age, growthRate, sentimentTrend, activityLevel } = params;
+    
+    const daysSinceCreation = (Date.now() - age) / (1000 * 60 * 60 * 24);
+    
+    if (daysSinceCreation < 7 && growthRate > 50) return 'emerging';
+    if (growthRate > 20 && activityLevel > 100) return 'growth';
+    if (growthRate < 5 && daysSinceCreation > 30) return 'decline';
+    
+    return 'peak';
+  }
 }

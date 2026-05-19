@@ -23,6 +23,8 @@ export interface EventRecord {
 
 type EventHandler = (event: SignalEvent) => void | Promise<void>;
 
+type EmitPayload = SignalEvent | { type: string; [key: string]: any };
+
 class EventBus {
   private subscriptions: Map<string, EventHandler[]> = new Map();
   private eventCount: number = 0;
@@ -30,7 +32,11 @@ class EventBus {
   /**
    * Emit an event to all subscribers and log to database
    */
-  async emit(event: SignalEvent): Promise<void> {
+  async emit(eventOrType: EmitPayload | string, payload?: Record<string, any>): Promise<void> {
+    const event: SignalEvent = typeof eventOrType === 'string'
+      ? { ...(payload || {}), type: eventOrType, timestamp: (payload?.timestamp ?? Date.now()) } as SignalEvent
+      : (eventOrType as SignalEvent);
+
     try {
       // Log to database
       const { error } = await supabase
@@ -128,7 +134,7 @@ class EventBus {
         return [];
       }
 
-      return (data || []).map(row => ({
+      return (data || []).map((row: any) => ({
         id: row.id,
         type: row.type,
         payload: row.payload,
@@ -159,7 +165,7 @@ class EventBus {
         return [];
       }
 
-      return (data || []).map(row => ({
+      return (data || []).map((row: any) => ({
         id: row.id,
         type: row.type,
         payload: row.payload,
@@ -174,10 +180,11 @@ class EventBus {
   }
 }
 
-// Export singleton instance
+// Export class and singleton instance
+export { EventBus };
 export const eventBus = new EventBus();
 
 // Convenience function for emitting
-export async function emit(event: SignalEvent): Promise<void> {
-  return eventBus.emit(event);
+export async function emit(eventOrType: EmitPayload | string, payload?: Record<string, any>): Promise<void> {
+  return eventBus.emit(eventOrType, payload);
 }

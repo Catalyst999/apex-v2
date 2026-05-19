@@ -3,13 +3,16 @@
   "version": "1.0.0",
   "main": "dist/index.js",
   "scripts": {
-    "start": "npx ts-node src/index.ts",
+    "start": "npx ts-node -P tsconfig.backend.json src/index.ts",
     "build:backend": "tsc -p tsconfig.backend.json",
     "build:frontend": "next build",
     "build": "npm run build:backend && npm run build:frontend",
-    "dev:backend": "npx ts-node src/index.ts",
+    "dev:backend": "npx ts-node -P tsconfig.backend.json src/index.ts",
     "dev:frontend": "next dev",
-    "dev": "npm run dev:backend"
+    "dev": "npm run dev:backend",
+    "test:ingest": "npx ts-node -P tsconfig.scripts.json scripts/test-ingest.ts",
+    "test:stress": "npx ts-node -P tsconfig.scripts.json scripts/stress-test-ingest.ts",
+    "test:http": "npx ts-node -P tsconfig.scripts.json scripts/test-signal-http.ts"
   },
   "keywords": [],
   "author": "Catalyst",
@@ -43,7 +46,7 @@
     "@types/react-dom": "^18.3.7",
     "tailwindcss": "^4.2.4",
     "ts-node": "^10.9.2",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.3"
   },
   "engines": {
     "node": ">=18.0.0"

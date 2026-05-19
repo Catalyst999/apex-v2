@@ -49,6 +49,10 @@ export interface RawPair {
   liquidity: {
     usd: number;
   };
+  holders?: {
+    count?: number;
+    topPercent?: number;
+  };
   pairCreatedAt: number;
   deployer?:     string;
 }

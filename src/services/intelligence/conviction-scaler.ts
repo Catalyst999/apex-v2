@@ -1,7 +1,7 @@
 import { supabase } from '../../db/supabase';
 import { walletManager } from '../wallet/wallet-manager';
 import { marketMemoryEngine } from './market-memory-engine';
-import { emit } from '../events/event-bus';
+import { eventBus, emit } from '../events/event-bus';
 import { confidenceAdjuster } from '../learning/confidence-adjuster';
 
 enum ConvictionMode {
@@ -37,6 +37,11 @@ interface ConvictionResult {
 
 class ConvictionScaler {
   private convictionHistory: Map<string, ConvictionResult[]> = new Map();
+  private weightAdjustments: Map<string, { adjustment: { convictionMultiplier: number; confidenceThreshold: number; positionSizeMultiplier: number }; updatedAt: number }> = new Map();
+
+  constructor() {
+    this.registerSignalWeightListener();
+  }
 
   async calculateConviction(
     walletId: string,
@@ -138,10 +143,84 @@ class ConvictionScaler {
           weights.regime = 0.10;
         }
       }
+
+      const override = this.getWeightOverride(walletId);
+      if (override) {
+        weights.smartMoney += override.convictionMultiplier > 1 ? 0.05 : -0.05;
+        weights.narrativeVitality += override.convictionMultiplier > 1 ? 0.04 : -0.04;
+        weights.regime += override.confidenceThreshold > 60 ? 0.02 : 0;
+        weights.marketMemory += override.positionSizeMultiplier < 1 ? 0.03 : -0.02;
+        weights = this.normalizeWeights(weights);
+      }
+
       return weights;
     } catch (error) {
       return { smartMoney: 0.30, narrativeVitality: 0.20, holderBehavior: 0.20, regime: 0.15, marketMemory: 0.15 };
     }
+  }
+
+  private getWeightOverride(walletId: string): { convictionMultiplier: number; confidenceThreshold: number; positionSizeMultiplier: number } | null {
+    const entry = this.weightAdjustments.get(walletId);
+    return entry ? entry.adjustment : null;
+  }
+
+  private normalizeWeights(weights: {
+    smartMoney: number;
+    narrativeVitality: number;
+    holderBehavior: number;
+    regime: number;
+    marketMemory: number;
+  }): {
+    smartMoney: number;
+    narrativeVitality: number;
+    holderBehavior: number;
+    regime: number;
+    marketMemory: number;
+  } {
+    const total = Object.values(weights).reduce((sum, value) => sum + Math.max(value, 0), 0);
+    if (total <= 0) {
+      return { smartMoney: 0.30, narrativeVitality: 0.20, holderBehavior: 0.20, regime: 0.15, marketMemory: 0.15 };
+    }
+
+    const normalized = Object.fromEntries(
+      Object.entries(weights).map(([key, value]) => [key, Math.max(value, 0) / total])
+    ) as Record<string, number>;
+
+    return {
+      smartMoney: normalized.smartMoney,
+      narrativeVitality: normalized.narrativeVitality,
+      holderBehavior: normalized.holderBehavior,
+      regime: normalized.regime,
+      marketMemory: normalized.marketMemory,
+    };
+  }
+
+  private registerSignalWeightListener(): void {
+    eventBus.subscribe('SIGNAL_WEIGHTS_UPDATED', (event: any) => {
+      try {
+        this.handleSignalWeightsUpdated(event);
+      } catch (error) {
+        console.error('[ConvictionScaler] Failed to handle SIGNAL_WEIGHTS_UPDATED:', error);
+      }
+    });
+  }
+
+  private handleSignalWeightsUpdated(event: any): void {
+    if (!event?.walletId || !event.adjustment) return;
+    const adjustment = event.adjustment;
+    this.weightAdjustments.set(event.walletId, {
+      adjustment: {
+        convictionMultiplier: adjustment.convictionMultiplier ?? 1.0,
+        confidenceThreshold: adjustment.confidenceThreshold ?? 50,
+        positionSizeMultiplier: adjustment.positionSizeMultiplier ?? 1.0,
+      },
+      updatedAt: Date.now(),
+    });
+
+    console.log(
+      `[ConvictionScaler] Applied SIGNAL_WEIGHTS_UPDATED for wallet ${event.walletId}: ` +
+      `multiplier=${adjustment.convictionMultiplier?.toFixed(2)}, threshold=${adjustment.confidenceThreshold}`
+    );
   }
 
   private getRegimeDampeningFactor(regimeCondition: number): number {

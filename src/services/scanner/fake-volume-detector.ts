@@ -1,3 +1,6 @@
+import { RawPair } from "./dexscreener";
+import { heliusRpc } from "../routing/helius-rpc-service";
+
 // src/services/scanner/fake-volume-detector.ts
 // Catalyst Apex Trader v2.1 — Fake Volume Detector
 //
@@ -136,4 +139,108 @@ export function volumeIsReal(pair: any): boolean {
 export function fakeVolumeSummary(result: FakeVolumeResult): string {
   if (!result.isFake) return "✅ Volume real";
   return `❌ Fake vol (${result.confidence}%): ${result.flags.join(" | ")}`;
+}
+
+export interface FakeVolumePlay {
+  pair: RawPair;
+  result: FakeVolumeResult;
+}
+
+export function scanForFakeVolumePlays(pairs: RawPair[]): FakeVolumePlay[] {
+  return pairs
+    .map((pair) => ({ pair, result: detectFakeVolume(pair) }))
+    .filter((entry) => entry.result.isFake && entry.result.confidence >= 50)
+    .sort((a, b) => b.result.confidence - a.result.confidence);
+}
+
+// File: src/services/scanner/fake-volume-detector.ts
+
+export interface FakeVolumeSignal {
+  token: string;
+  riskScore: number;           // 0-100
+  volumeAnomaly: number;       // % deviation from normal
+  walletCluster: boolean;      // Same wallets trading repeatedly
+  liquidityWarning: boolean;   // Abnormal liquidity
+  confidence: number;          // 0-100
+}
+
+type Transaction = any;
+
+export class FakeVolumeDetector {
+  async analyzeTx(txSig: string): Promise<FakeVolumeSignal | null> {
+    // Fetch transaction from Helius
+    const tx = await ((heliusRpc as any).getTransaction?.(txSig) ?? null);
+    if (!tx || !tx.token) return null;
+
+    // Check for wash trading patterns
+    const walletCluster = await this.detectWalletCluster(tx);
+
+    // Check volume anomaly
+    const volumeAnomaly = await this.analyzeVolume(tx);
+
+    // Calculate risk score
+    const riskScore = this.calculateRisk({
+      walletCluster,
+      volumeAnomaly,
+      liquidityChange: tx.liquidityChange,
+    });
+
+    if (riskScore > 70) {
+      return {
+        token: tx.token,
+        riskScore,
+        volumeAnomaly,
+        walletCluster,
+        liquidityWarning: volumeAnomaly > 200,
+        confidence: 85,
+      };
+    }
+
+    return null;
+  }
+
+  private calculateRisk(params: {
+    walletCluster: boolean;
+    volumeAnomaly: number;
+    liquidityChange?: number;
+  }): number {
+    let score = 0;
+
+    if (params.walletCluster) score += 40;
+    if (params.volumeAnomaly > 50) score += 30;
+    if (params.volumeAnomaly > 100) score += 20;
+    if (params.liquidityChange && Math.abs(params.liquidityChange) > 0.25) {
+      score += 10;
+    }
+
+    return Math.min(100, score);
+  }
+
+  private async detectWalletCluster(tx: Transaction): Promise<boolean> {
+    const getTokenTxFn = (heliusRpc as any).getTokenTransactions;
+    const recentTxs = Array.isArray(getTokenTxFn)
+      ? []
+      : await (typeof getTokenTxFn === 'function'
+        ? getTokenTxFn.call(heliusRpc, tx.token, { limit: 20 })
+        : []);
+
+    if (!Array.isArray(recentTxs) || recentTxs.length === 0) return false;
+
+    const uniqueWallets = new Set(recentTxs.map((t: any) => t.from)).size;
+    const walletRatio = uniqueWallets / recentTxs.length;
+    return walletRatio < 0.6;
+  }
+
+  private async analyzeVolume(tx: Transaction): Promise<number> {
+    const recent5min = await getVolume(tx.token, 5);
+    const hourAverage = await getVolume(tx.token, 60);
+
+    if (hourAverage === 0) return 0;
+    return ((recent5min - hourAverage) / hourAverage) * 100;
+  }
+}
+
+async function getVolume(token: string, minutes: number): Promise<number> {
+  // Placeholder volume retrieval. Replace with real exchange/RPC volume lookup if available.
+  return 0;
 }

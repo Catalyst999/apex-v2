@@ -1,6 +1,12 @@
-import { createClient } from '@supabase/supabase-js';
+const { createClient } = require('@supabase/supabase-js');
 
 const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_ANON_KEY!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+if (!supabaseServiceKey) {
+  throw new Error('SUPABASE_SERVICE_KEY is required. Set SUPABASE_SERVICE_KEY for backend Supabase access.');
+}
+
+console.warn('[Supabase] Using SERVICE_KEY in src/core/db/supabase.ts');
+
+export const supabase = createClient(supabaseUrl, supabaseServiceKey);

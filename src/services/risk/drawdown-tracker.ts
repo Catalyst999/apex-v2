@@ -115,6 +115,7 @@ class DrawdownTracker {
       maxDrawdown: this.maxDrawdown,
       alerts: this.alerts,
       isInDrawdown: this.currentDrawdown > 0,
+      maximumRiskPercent: 25,
       severity:
         this.currentDrawdown > 30
           ? 'CATASTROPHIC'

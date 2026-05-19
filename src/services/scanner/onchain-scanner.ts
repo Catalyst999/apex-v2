@@ -13,7 +13,7 @@
 import { HELIUS, FEATURE_FLAGS } from '../../core/config';
 import { emit } from '../events/event-bus';
 import { signalGateway } from '../gateway/signal-gateway';
-import { heliusRpc } from './helius-rpc-service'; // ← USE NEW SERVICE
+import { heliusRpc } from '../routing/helius-rpc-service'; // ← USE NEW SERVICE
 import { shouldProcessSignal } from '../intelligence/signal-dedup';
 import { notifyRateLimit } from '../../core/rpc-throttle';
 

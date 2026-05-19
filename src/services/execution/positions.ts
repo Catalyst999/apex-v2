@@ -47,7 +47,7 @@ export async function openPosition(
   try {
     const tradeAmount = positionSize ?? TRADE_AMOUNT_USD;
 
-    const trade = await buyToken(tokenMint);
+    const trade = await buyToken(tokenMint, 100);
     if (!trade.success) {
       console.error("❌ Buy failed:", trade.error);
       return;
@@ -226,7 +226,7 @@ async function partialExit(
   const sellNative  = BigInt(Math.floor(Number(totalNative) * sellPct));
   const remaining   = totalNative - sellNative;
 
-  await sellToken(tokenAddress, sellNative.toString());
+  await sellToken(tokenAddress, sellNative.toString(), 100);
 
   const partialPnl = (currentPrice - pos.entry_price) / pos.entry_price * pos.amount_usd * sellPct;
 
@@ -256,7 +256,7 @@ async function triggerMoonbag(
     return;
   }
 
-  await sellToken(tokenAddress, halfNative.toString());
+  await sellToken(tokenAddress, halfNative.toString(), 100);
 
   await supabase.from("trades").update({
     moonbag_active: true,
@@ -276,7 +276,7 @@ async function closePosition(
   pnlUsd:       number,
   reason:       string,
 ): Promise<void> {
-  await sellToken(tokenAddress, pos.amount_native);
+  await sellToken(tokenAddress, pos.amount_native, 100);
 
   await supabase.from("trades").update({
     status:     "closed",

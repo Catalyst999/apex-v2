@@ -1,15 +1,14 @@
 import axios from "axios";
 import {
-  Connection,
   VersionedTransaction,
-  PublicKey,
+  Keypair,
 } from "@solana/web3.js";
 import { Buffer } from "buffer";
-import { SOLANA, TRADE_AMOUNT_USD } from "../../core/config";
+import { SOLANA, TRADE_AMOUNT_USD, EXECUTION } from "../../core/config";
 import { usdToSol, solToLamports } from "./parity";
 import { emit } from "../events/event-bus";
+import { solanaConnection } from "../rpc/solana-connection";
 
-const connection = new Connection(SOLANA.RPC_URL, "confirmed");
 const JUPITER_API = "https://quote-api.jup.ag/v6";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -22,10 +21,89 @@ export interface TradeResult {
   error?: string;
 }
 
+export interface QuoteResult {
+  success: boolean;
+  quote?: any;
+  error?: string;
+}
+
+export interface SwapResult {
+  success: boolean;
+  tx?: VersionedTransaction;
+  error?: string;
+}
+
+export async function getQuote(
+  tokenMint: string,
+  lamports: number,
+  slippageBps: number
+): Promise<QuoteResult> {
+  try {
+    const quoteRes = await axios.get(`${JUPITER_API}/quote`, {
+      params: {
+        inputMint: SOL_MINT,
+        outputMint: tokenMint,
+        amount: lamports.toString(),
+        slippageBps,
+      },
+    });
+
+    return {
+      success: true,
+      quote: quoteRes.data,
+    };
+  } catch (err: any) {
+    console.error("❌ Jupiter quote error:", err.message);
+    return {
+      success: false,
+      error: err.message,
+    };
+  }
+}
+
+export async function buildSwap(
+  quote: any,
+  walletKeypair: Keypair
+): Promise<SwapResult> {
+  try {
+    const swapRes = await axios.post(`${JUPITER_API}/swap`, {
+      quoteResponse: quote,
+      userPublicKey: walletKeypair.publicKey.toBase58(),
+      wrapAndUnwrapSol: true,
+      prioritizationFeeLamports: SOLANA.priorityFeeLamports,
+    });
+
+    const { swapTransaction } = swapRes.data;
+
+    // Deserialize transaction
+    const txBuf = Buffer.from(swapTransaction, "base64");
+    const tx = VersionedTransaction.deserialize(txBuf);
+    tx.sign([walletKeypair]);
+
+    return {
+      success: true,
+      tx,
+    };
+  } catch (err: any) {
+    console.error("❌ Jupiter swap build error:", err.message);
+    return {
+      success: false,
+      error: err.message,
+    };
+  }
+}
+
 export async function buyToken(
   tokenMint: string,
+  slippageBps: number,
+  walletKeypair?: Keypair,
 ): Promise<TradeResult> {
   try {
+    const signer = walletKeypair || SOLANA.keypair;
+    if (!signer) {
+      throw new Error('Missing Solana keypair configuration. Set wallet keypair or SOLANA_KEYPAIR_SECRET/SOLANA_KEY_PATH.');
+    }
+
     // Convert USD to SOL
     const solAmount = await usdToSol(TRADE_AMOUNT_USD);
     const lamports = await solToLamports(solAmount);
@@ -33,17 +111,23 @@ export async function buyToken(
     console.log(`🛒 Buying ${tokenMint}`);
     console.log(`💰 Amount: $${TRADE_AMOUNT_USD} = ${solAmount.toFixed(6)} SOL`);
 
-    // Step 1: Get quote from Jupiter
-    if (!SOLANA.keypair) {
-      throw new Error('Missing Solana keypair configuration. Set SOLANA_KEYPAIR_SECRET or SOLANA_KEY_PATH.');
+    if (EXECUTION.MODE === 'shadow' || EXECUTION.DRY_RUN || !EXECUTION.LIVE_TRADING) {
+      console.log('[Jupiter] Shadow/Dry-run mode enabled, skipping blockchain broadcast.');
+      return {
+        success: true,
+        txSignature: 'SIMULATED',
+        amountIn: Number(lamports),
+        amountOut: 0,
+      };
     }
 
+    // Step 1: Get quote from Jupiter
     const quoteRes = await axios.get(`${JUPITER_API}/quote`, {
       params: {
         inputMint: SOL_MINT,
         outputMint: tokenMint,
         amount: lamports.toString(),
-        slippageBps: SOLANA.maxSlippageBps,
+        slippageBps,
       },
     });
 
@@ -53,7 +137,7 @@ export async function buyToken(
     // Step 2: Get swap transaction
     const swapRes = await axios.post(`${JUPITER_API}/swap`, {
       quoteResponse: quote,
-      userPublicKey: SOLANA.keypair.publicKey.toBase58(),
+      userPublicKey: signer.publicKey.toBase58(),
       wrapAndUnwrapSol: true,
       prioritizationFeeLamports: SOLANA.priorityFeeLamports,
     });
@@ -63,9 +147,10 @@ export async function buyToken(
     // Step 3: Deserialize and sign transaction
     const txBuf = Buffer.from(swapTransaction, "base64");
     const tx = VersionedTransaction.deserialize(txBuf);
-    tx.sign([SOLANA.keypair]);
+    tx.sign([signer]);
 
     // Step 4: Send transaction
+    const connection = solanaConnection.getBestConnection();
     const txSignature = await connection.sendRawTransaction(
       tx.serialize(),
       { skipPreflight: false, maxRetries: 3 }
@@ -73,9 +158,12 @@ export async function buyToken(
 
     console.log(`✅ Buy tx sent: ${txSignature}`);
 
-    // Step 5: Confirm
-    await connection.confirmTransaction(txSignature, "confirmed");
-    console.log(`✅ Confirmed: https://solscan.io/tx/${txSignature}`);
+    const confirmation = await connection.confirmTransaction(txSignature, 'finalized');
+    if (confirmation.value?.err) {
+      throw new Error(`Transaction confirmation failed: ${JSON.stringify(confirmation.value.err)}`);
+    }
+
+    console.log(`✅ Finalized: https://solscan.io/tx/${txSignature}`);
 
     return {
       success: true,
@@ -96,9 +184,26 @@ export async function buyToken(
 export async function sellToken(
   tokenMint: string,
   tokenAmount: string,
+  slippageBps: number,
+  walletKeypair?: Keypair,
 ): Promise<TradeResult> {
   try {
+    const signer = walletKeypair || SOLANA.keypair;
+    if (!signer) {
+      throw new Error('Missing Solana keypair configuration. Set wallet keypair or SOLANA_KEYPAIR_SECRET/SOLANA_KEY_PATH.');
+    }
+
     console.log(`💸 Selling ${tokenAmount} of ${tokenMint}`);
+
+    if (EXECUTION.MODE === 'shadow' || EXECUTION.DRY_RUN || !EXECUTION.LIVE_TRADING) {
+      console.log('[Jupiter] Shadow/Dry-run mode enabled, skipping blockchain broadcast.');
+      return {
+        success: true,
+        txSignature: 'SIMULATED',
+        amountIn: Number(tokenAmount),
+        amountOut: 0,
+      };
+    }
 
     // Step 1: Get quote SOL output
     const quoteRes = await axios.get(`${JUPITER_API}/quote`, {
@@ -106,20 +211,16 @@ export async function sellToken(
         inputMint: tokenMint,
         outputMint: SOL_MINT,
         amount: tokenAmount,
-        slippageBps: SOLANA.maxSlippageBps,
+        slippageBps,
       },
     });
 
     const quote = quoteRes.data;
 
-    if (!SOLANA.keypair) {
-      throw new Error('Missing Solana keypair configuration. Set SOLANA_KEYPAIR_SECRET or SOLANA_KEY_PATH.');
-    }
-
     // Step 2: Get swap transaction
     const swapRes = await axios.post(`${JUPITER_API}/swap`, {
       quoteResponse: quote,
-      userPublicKey: SOLANA.keypair.publicKey.toBase58(),
+      userPublicKey: signer.publicKey.toBase58(),
       wrapAndUnwrapSol: true,
       prioritizationFeeLamports: SOLANA.priorityFeeLamports,
     });
@@ -129,15 +230,20 @@ export async function sellToken(
     // Step 3: Sign and send
     const txBuf = Buffer.from(swapTransaction, "base64");
     const tx = VersionedTransaction.deserialize(txBuf);
-    tx.sign([SOLANA.keypair]);
+    tx.sign([signer]);
 
+    const connection = solanaConnection.getBestConnection();
     const txSignature = await connection.sendRawTransaction(
       tx.serialize(),
       { skipPreflight: false, maxRetries: 3 }
     );
 
-    await connection.confirmTransaction(txSignature, "confirmed");
-    console.log(`✅ Sell confirmed: https://solscan.io/tx/${txSignature}`);
+    const confirmation = await connection.confirmTransaction(txSignature, 'finalized');
+    if (confirmation.value?.err) {
+      throw new Error(`Transaction confirmation failed: ${JSON.stringify(confirmation.value.err)}`);
+    }
+
+    console.log(`✅ Sell finalized: https://solscan.io/tx/${txSignature}`);
 
     return {
       success: true,

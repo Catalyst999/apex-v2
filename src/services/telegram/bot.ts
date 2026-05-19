@@ -18,13 +18,13 @@ export let bot: TelegramBot | null = null;
  * Initialize bot and register all commands
  */
 export async function initializeBot(): Promise<void> {
-  if (!TELEGRAM.TOKEN) {
+  if (!TELEGRAM.BOT_TOKEN) {
     console.error('[Bot] TELEGRAM_BOT_TOKEN not set');
     return;
   }
 
   try {
-    bot = new TelegramBot(TELEGRAM.TOKEN, {
+    bot = new TelegramBot(TELEGRAM.BOT_TOKEN, {
       polling: {
         interval: 300,
         autoStart: false,  // ✅ DISABLE - prevents 409 conflict
@@ -751,20 +751,20 @@ async function handleResumeCommand(msg: any): Promise<void> {
  * Check if chat is authorized
  */
 function isAuthorized(chatId: number): boolean {
-  if (!TELEGRAM.ALLOWED_CHATS || TELEGRAM.ALLOWED_CHATS.length === 0) {
+  if (!TELEGRAM.ALLOWED_CHAT_IDS || TELEGRAM.ALLOWED_CHAT_IDS.length === 0) {
     return true;
   }
-  return TELEGRAM.ALLOWED_CHATS.includes(String(chatId));
+  return TELEGRAM.ALLOWED_CHAT_IDS.includes(String(chatId));
 }
 
 /**
  * Send alert to authorized chat
  */
 export async function sendAlert(message: string): Promise<void> {
-  if (!bot || !TELEGRAM.ALLOWED_CHATS || TELEGRAM.ALLOWED_CHATS.length === 0) return;
+  if (!bot || !TELEGRAM.ALLOWED_CHAT_IDS || TELEGRAM.ALLOWED_CHAT_IDS.length === 0) return;
 
   try {
-    for (const chatId of TELEGRAM.ALLOWED_CHATS) {
+    for (const chatId of TELEGRAM.ALLOWED_CHAT_IDS) {
       await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
   } catch (error) {

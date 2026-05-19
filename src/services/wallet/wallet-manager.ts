@@ -1,12 +1,84 @@
 // File path: src/services/wallet/wallet-manager.ts
 
-import { supabase } from '../../core/db/supabase';
-import { WALLET_CONFIG } from '../../core/config';
+import { supabase } from '../../db/supabase';
+import { WALLETS } from '../../core/config';
+import { Keypair } from '@solana/web3.js';
 import { Wallet, WalletStrategy, WalletStrategyType, WalletContext, WalletAnalytics, WalletRiskProfile } from './wallet-types';
 import { v4 as uuidv4 } from 'uuid';
 
+class KeypairManager {
+  encryptKeypair(secret: string | Uint8Array): string {
+    const keyBytes = this.normalizeSecretKey(secret);
+    return Buffer.from(JSON.stringify(Array.from(keyBytes)), 'utf8').toString('base64');
+  }
+
+  decryptKeypair(encoded: string): Uint8Array {
+    const raw = Buffer.from(encoded, 'base64').toString('utf8');
+    return Uint8Array.from(JSON.parse(raw));
+  }
+
+  getKeypairFromEncrypted(encoded: string): Keypair {
+    const secretKey = this.decryptKeypair(encoded);
+    return Keypair.fromSecretKey(secretKey);
+  }
+
+  normalizeSecretKey(secret: string | Uint8Array): Uint8Array {
+    if (secret instanceof Uint8Array) return secret;
+
+    try {
+      const parsed = JSON.parse(secret);
+      if (Array.isArray(parsed)) return Uint8Array.from(parsed);
+    } catch (_err) {
+      // ignore parse failures
+    }
+
+    try {
+      return Buffer.from(secret, 'base64');
+    } catch (err) {
+      throw new Error(`Invalid keypair secret format: ${err}`);
+    }
+  }
+
+  generateKeypair(): Keypair {
+    return Keypair.generate();
+  }
+
+  importKeypair(secret: string): Keypair {
+    try {
+      // Support multiple formats:
+      // 1. Base64 encoded secret key (32 bytes)
+      // 2. Seed phrase (24 words)
+      // 3. Hex string
+      
+      if (secret.includes(' ')) {
+        // Seed phrase - TODO: implement BIP39
+        throw new Error('Seed phrase import not yet implemented');
+      }
+
+      try {
+        const secretKey = Buffer.from(secret, 'base64');
+        if (secretKey.length === 64) {
+          return Keypair.fromSecretKey(new Uint8Array(secretKey));
+        }
+      } catch {}
+
+      try {
+        const secretKey = Buffer.from(secret, 'hex');
+        if (secretKey.length === 64) {
+          return Keypair.fromSecretKey(new Uint8Array(secretKey));
+        }
+      } catch {}
+
+      throw new Error('Invalid keypair format');
+    } catch (err) {
+      throw new Error(`Keypair import failed: ${err}`);
+    }
+  }
+}
+
 export class WalletManager {
   private selectedWalletId: string | null = null;
+  private keypairManager = new KeypairManager();
 
   /**
    * Initialize a new wallet
@@ -15,8 +87,54 @@ export class WalletManager {
     address: string,
     strategy: WalletStrategyType,
     tag: string,
-    metadata?: any
+    metadata?: any,
+    keypairSecret?: string | Uint8Array,
+    keyType: string = 'ed25519'
   ): Promise<Wallet> {
+    const walletId = uuidv4();
+    const encryptedKeypair = keypairSecret ? this.keypairManager.encryptKeypair(keypairSecret) : null;
+    const walletData: Record<string, any> = {
+      id: walletId,
+      address: address.toLowerCase(),
+      strategy,
+      tag,
+      is_active: true,
+      metadata,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    if (encryptedKeypair) {
+      walletData.encrypted_keypair = encryptedKeypair;
+      walletData.key_type = keyType;
+    }
+
+    const { data, error } = await supabase
+      .from('wallets')
+      .insert(walletData)
+      .select()
+      .single();
+
+    if (error) throw new Error(`Failed to create wallet: ${error.message}`);
+    if (!data) throw new Error('No wallet data returned');
+
+    await this.createRiskProfile(walletId, strategy);
+    await this.initializeAnalytics(walletId);
+
+    return data;
+  }
+
+  /**
+   * Create wallet with keypair
+   */
+  async createWalletWithKeypair(
+    keypair: Keypair,
+    strategy: WalletStrategyType,
+    tag: string
+  ): Promise<Wallet> {
+    const address = keypair.publicKey.toBase58();
+    const encrypted = this.keypairManager.encryptKeypair(keypair.secretKey);
+
     const walletId = uuidv4();
 
     const { data, error } = await supabase
@@ -27,7 +145,9 @@ export class WalletManager {
         strategy,
         tag,
         is_active: true,
-        metadata,
+        encrypted_keypair: encrypted,
+        key_type: 'ed25519',
+        metadata: { keyType: 'ed25519' },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -37,10 +157,7 @@ export class WalletManager {
     if (error) throw new Error(`Failed to create wallet: ${error.message}`);
     if (!data) throw new Error('No wallet data returned');
 
-    // Create risk profile for wallet
     await this.createRiskProfile(walletId, strategy);
-
-    // Create analytics record
     await this.initializeAnalytics(walletId);
 
     return data;
@@ -90,13 +207,61 @@ export class WalletManager {
   }
 
   /**
+   * Get keypair from wallet
+   */
+  async getWalletKeypair(walletId: string): Promise<Keypair | null> {
+    const wallet = await this.getWallet(walletId);
+    if (!wallet) return null;
+
+    const { data, error } = await supabase
+      .from('wallets')
+      .select('encrypted_keypair')
+      .eq('id', walletId)
+      .single();
+
+    if (error || !data?.encrypted_keypair) {
+      console.warn(`[WalletManager] No encrypted keypair found for ${walletId}`);
+      return null;
+    }
+
+    try {
+      return this.keypairManager.getKeypairFromEncrypted(data.encrypted_keypair);
+    } catch (err) {
+      console.error(`[WalletManager] Keypair decryption failed:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Attach keypair to existing wallet
+   */
+  async attachKeypairToWallet(
+    walletId: string,
+    keypairSecret: string | Uint8Array,
+    keyType: string = 'ed25519'
+  ): Promise<void> {
+    const encryptedKeypair = this.keypairManager.encryptKeypair(keypairSecret);
+
+    const { error } = await supabase
+      .from('wallets')
+      .update({
+        encrypted_keypair: encryptedKeypair,
+        key_type: keyType,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', walletId);
+
+    if (error) throw new Error(`Failed to attach keypair to wallet: ${error.message}`);
+  }
+
+  /**
    * Validate wallet isolation and current wallet context
    */
   async validateIsolation(walletId: string, context: string = ''): Promise<boolean> {
     const wallet = await this.getWallet(walletId);
     if (!wallet || !wallet.is_active) return false;
 
-    if (WALLET_CONFIG.ISOLATION_STRICT) {
+    if (WALLETS.ISOLATION_STRICT) {
       if (!this.selectedWalletId) return false;
       if (this.selectedWalletId !== walletId) return false;
     }
@@ -196,54 +361,44 @@ export class WalletManager {
   }
 
   /**
-   * Create risk profile for wallet based on strategy
+   * Update position count for wallet
    */
-  private async createRiskProfile(walletId: string, strategy: WalletStrategyType): Promise<void> {
-    const profiles = {
-      [WalletStrategy.CONSERVATIVE]: {
-        max_position_usd: 500,
-        max_total_exposure_usd: 2000,
-        max_leverage: 1,
-        max_positions: 3,
-        stop_loss_percent: 8,
-        take_profit_percent: 40,
-        max_daily_loss_usd: 200,
-      },
-      [WalletStrategy.AGGRESSIVE]: {
-        max_position_usd: 2000,
-        max_total_exposure_usd: 8000,
-        max_leverage: 2,
-        max_positions: 5,
-        stop_loss_percent: 15,
-        take_profit_percent: 100,
-        max_daily_loss_usd: 1000,
-      },
-      [WalletStrategy.EXPERIMENTAL]: {
-        max_position_usd: 5000,
-        max_total_exposure_usd: 15000,
-        max_leverage: 3,
-        max_positions: 8,
-        stop_loss_percent: 20,
-        take_profit_percent: 200,
-        max_daily_loss_usd: 2000,
-      },
-    };
+  async updatePositionCount(walletId: string, delta: number): Promise<void> {
+    const wallet = await this.getWallet(walletId);
+    if (!wallet) return;
 
-    const profile = profiles[strategy];
+    const currentCount = wallet.metadata?.positionCount || 0;
+    const newCount = Math.max(0, currentCount + delta);
 
-    const { error } = await supabase.from('wallet_risk_profiles').insert({
-      wallet_id: walletId,
-      ...profile,
-      current_daily_loss_usd: 0,
-    });
+    const { error } = await supabase
+      .from('wallets')
+      .update({
+        metadata: { ...wallet.metadata, positionCount: newCount },
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', walletId);
 
-    if (error) throw new Error(`Failed to create risk profile: ${error.message}`);
+    if (error) console.error(`Failed to update position count:`, error);
   }
 
   /**
-   * Get risk profile
+   * Get analytics for wallet
    */
-  async getRiskProfile(walletId: string): Promise<WalletRiskProfile | null> {
+  public async getAnalytics(walletId: string): Promise<WalletAnalytics | null> {
+    const { data, error } = await supabase
+      .from('wallet_analytics')
+      .select('*')
+      .eq('wallet_id', walletId)
+      .single();
+
+    if (error && error.code !== 'PGRST116') throw error;
+    return data || null;
+  }
+
+  /**
+   * Get risk profile for wallet
+   */
+  public async getRiskProfile(walletId: string): Promise<WalletRiskProfile | null> {
     const { data, error } = await supabase
       .from('wallet_risk_profiles')
       .select('*')
@@ -255,105 +410,41 @@ export class WalletManager {
   }
 
   /**
+   * Create risk profile for wallet
+   */
+  private async createRiskProfile(walletId: string, strategy: WalletStrategyType): Promise<void> {
+    const { error } = await supabase.from('wallet_risk_profiles').insert({
+      id: uuidv4(),
+      wallet_id: walletId,
+      strategy,
+      max_positions: 5,
+      max_leverage: 1,
+      max_daily_loss: 500,
+      correlation_threshold: 0.7,
+      created_at: new Date().toISOString(),
+    });
+
+    if (error) console.error(`Failed to create risk profile:`, error);
+  }
+
+  /**
    * Initialize analytics for wallet
    */
   private async initializeAnalytics(walletId: string): Promise<void> {
     const { error } = await supabase.from('wallet_analytics').insert({
+      id: uuidv4(),
       wallet_id: walletId,
+      total_pnl_usd: 0,
+      win_rate: 0,
+      avg_win: 0,
+      avg_loss: 0,
       total_trades: 0,
       winning_trades: 0,
       losing_trades: 0,
-      win_rate: 0,
-      avg_win_usd: 0,
-      avg_loss_usd: 0,
-      profit_factor: 0,
-      total_pnl_usd: 0,
-      total_pnl_percent: 0,
-      current_streak: 'neutral',
-      streak_count: 0,
-      last_trade_time: new Date().toISOString(),
       created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
     });
 
-    if (error) throw new Error(`Failed to initialize analytics: ${error.message}`);
-  }
-
-  /**
-   * Get analytics
-   */
-  async getAnalytics(walletId: string): Promise<WalletAnalytics | null> {
-    const { data, error } = await supabase
-      .from('wallet_analytics')
-      .select('*')
-      .eq('wallet_id', walletId)
-      .single();
-
-    if (error && error.code !== 'PGRST116') throw error;
-    return data || null;
-  }
-
-  /**
-   * Update wallet position count.
-   * This is currently a placeholder for future position count tracking.
-   */
-  async updatePositionCount(walletId: string, delta: number): Promise<void> {
-    const analytics = await this.getAnalytics(walletId);
-    if (!analytics) return;
-    // No persistent current_positions field exists yet in analytics.
-    // Implement position count tracking in analytics schema if needed.
-  }
-
-  async updatePnL(walletId: string, pnl: number): Promise<void> {
-    const analytics = await this.getAnalytics(walletId);
-    if (!analytics) return;
-
-    const { error } = await supabase
-      .from('wallet_analytics')
-      .update({
-        total_pnl_usd: analytics.total_pnl_usd + pnl,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('wallet_id', walletId);
-
-    if (error) throw new Error(`Failed to update wallet PnL: ${error.message}`);
-  }
-
-  /**
-   * Update analytics after trade
-   */
-  async updateAnalyticsAfterTrade(
-    walletId: string,
-    pnl: number,
-    won: boolean
-  ): Promise<void> {
-    const current = await this.getAnalytics(walletId);
-    if (!current) return;
-
-    const newTotal = current.total_trades + 1;
-    const newWins = won ? current.winning_trades + 1 : current.winning_trades;
-    const newLosses = won ? current.losing_trades : current.losing_trades + 1;
-
-    const avgWin = newWins > 0 ? (current.avg_win_usd * (newWins - 1) + Math.max(0, pnl)) / newWins : 0;
-    const avgLoss = newLosses > 0 ? (current.avg_loss_usd * (newLosses - 1) + Math.min(0, pnl)) / newLosses : 0;
-
-    const { error } = await supabase
-      .from('wallet_analytics')
-      .update({
-        total_trades: newTotal,
-        winning_trades: newWins,
-        losing_trades: newLosses,
-        win_rate: newWins / newTotal,
-        avg_win_usd: avgWin,
-        avg_loss_usd: avgLoss,
-        profit_factor: Math.abs(avgWin) > 0 ? Math.abs(avgWin / avgLoss) : 0,
-        total_pnl_usd: current.total_pnl_usd + pnl,
-        last_trade_time: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('wallet_id', walletId);
-
-    if (error) throw new Error(`Failed to update analytics: ${error.message}`);
+    if (error) console.error(`Failed to initialize analytics:`, error);
   }
 }
 
